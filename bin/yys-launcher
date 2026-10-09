@@ -192,7 +192,7 @@ find_installed_exe() {
 
   # 备用方案: 扫描 drive_c 或 DATA_DIR 下的主可执行程序
   local fallback
-  fallback=$(find "${DATA_DIR}" "${WINEPREFIX}/drive_c" -maxdepth 6 \( -iname "Launch.exe" -o -iname "onmyoji.exe" -o -iname "NemuPlayer.exe" -o -iname "MuMuPlayer.exe" \) 2>/dev/null | head -n 1 || true)
+  fallback=$(find "${DATA_DIR}" "${WINEPREFIX}/drive_c" -maxdepth 6 \( -iname "onmyoji.exe" -o -iname "Launch.exe" -o -iname "NemuPlayer.exe" -o -iname "MuMuPlayer.exe" \) 2>/dev/null | head -n 1 || true)
   if [ -n "${fallback}" ] && [ -f "${fallback}" ]; then
     echo "${fallback}"
     return 0
@@ -223,6 +223,30 @@ download_installer() {
   fi
 
   echo ">> 安装包下载完成。"
+}
+
+run_installed_game() {
+  local target_exe="$1"
+  shift || true
+
+  echo ">> [3/3] 正在启动阴阳师桌面版 (${target_exe})..."
+  local app_dir
+  app_dir="$(dirname "${target_exe}")"
+
+  # 如果程序在子目录 bin 下，确保当前目录拥有上层配置文件的兼容软链接
+  if [ "$(basename "${app_dir}")" = "bin" ]; then
+    local root_dir
+    root_dir="$(dirname "${app_dir}")"
+    if [ -d "${root_dir}" ]; then
+      for cf in neox.xml client.ini pkginfo.json pkgmapping.json; do
+        [ -f "${root_dir}/${cf}" ] && [ ! -e "${app_dir}/${cf}" ] && ln -sf "../${cf}" "${app_dir}/${cf}" 2>/dev/null || true
+      done
+      [ -d "${root_dir}/res" ] && [ ! -e "${app_dir}/res" ] && ln -sf "../res" "${app_dir}/res" 2>/dev/null || true
+    fi
+  fi
+
+  cd "${app_dir}"
+  exec wine "$(basename "${target_exe}")" "$@"
 }
 
 run_installer() {
@@ -427,12 +451,9 @@ case "${ACTION}" in
   run)
     init_wineprefix
     if [ -f "${TARGET_EXE}" ]; then
-      cd "$(dirname "${TARGET_EXE}")"
-      wine "$(basename "${TARGET_EXE}")"
+      run_installed_game "${TARGET_EXE}" "$@"
     elif [ -f "${WINEPREFIX}/drive_c/${TARGET_EXE}" ]; then
-      local full="${WINEPREFIX}/drive_c/${TARGET_EXE}"
-      cd "$(dirname "${full}")"
-      wine "$(basename "${full}")"
+      run_installed_game "${WINEPREFIX}/drive_c/${TARGET_EXE}" "$@"
     else
       echo "错误: 指定的可执行文件不存在: ${TARGET_EXE}" >&2
       exit 1
@@ -442,9 +463,7 @@ case "${ACTION}" in
     init_wineprefix
     INSTALLED_EXE=$(find_installed_exe || true)
     if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
-      echo ">> [3/3] 正在启动阴阳师桌面版 (${INSTALLED_EXE})..."
-      cd "$(dirname "${INSTALLED_EXE}")"
-      wine "$(basename "${INSTALLED_EXE}")"
+      run_installed_game "${INSTALLED_EXE}" "$@"
     else
       echo ">> 检测到游戏尚未安装，准备启动官方安装向导..."
       run_installer
