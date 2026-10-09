@@ -23,7 +23,29 @@
 
 ---
 
-## 快速使用
+## 版本说明与安装注意
+
+网易官方提供了两种不同的 PC 端体验形式：
+
+### 1. 官方原生 PC 桌面互通版 (推荐)
+- **引擎**：网易自研 NeoX 原生游戏引擎（非模拟器，纯原生 Windows DirectX 客户端）。
+- **Linux/Wine 兼容性**：**完美兼容**。Direct3D / Vulkan 直通支持，画质满帧运行，配合本项目的中文字体与抗锯齿优化，体验极佳。
+- **获取方式**：
+  官方高防 CDN 免安装压缩包：[yys_win32_20250919.zip](https://g37.gdl.netease.com/yys_win32_20250919.zip) (约 19.8 GB)。
+  下载完成后，使用一条命令导入即可直接启动：
+  ```bash
+  nix run . -- --import /path/to/yys_win32_20250919.zip
+  ```
+  或者将已解压的客户端文件夹导入：
+  ```bash
+  nix run . -- --import /path/to/Onmyoji_Directory
+  ```
+
+### 2. MuMu 模拟器专版 (`yxyys_mumu12`)
+- **引擎**：Windows 版 MuMu 12 Android 模拟器。
+- **Linux/Wine 兼容性**：在点击安装时可能会提示 **“安装出错，错误码: 13 / 11001”**。
+  - **根因分析**：MuMu 模拟器底层依赖 `MuMuNxSup.sys` 等 Windows Ring 0 内核级硬件虚拟化驱动（魔改自 VirtualBox/Hyper-V 内核模块）。Linux 下的 Wine 作为用户态系统调用兼容层，无法加载 Windows 内核驱动（日志报 `sc query MuMuNxSup ... RUNNING failure`，`DoInstallHypervisor: failed`）。
+  - **建议**：在 Linux 下请直接使用上述**原生 PC 桌面互通版**，无需也不建议使用安卓模拟器套壳。
 
 ### 1. 启动游戏 / 首次安装
 

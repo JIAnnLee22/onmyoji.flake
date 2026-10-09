@@ -27,6 +27,7 @@ INSTALLER_DIR="${DATA_DIR}/installer"
 INSTALLER_FILE="${INSTALLER_DIR}/yxyys_mumu12_setup.exe"
 OFFICIAL_PAGE_URL="https://adl.netease.com/d/g/a11/c/yxyys_mumu12"
 OFFICIAL_DOWNLOAD_URL="https://mumu.nie.netease.com/api/dl/win?channel=yx-yys"
+OFFICIAL_NATIVE_PC_URL="https://g37.gdl.netease.com/yys_win32_20250919.zip"
 
 # 2. 导出 Wine 隔离与环境配置
 export WINEPREFIX
@@ -42,16 +43,17 @@ export LC_ALL="${LC_ALL:-zh_CN.UTF-8}"
 
 show_help() {
   cat <<EOF
-阴阳师桌面版 (Onmyoji Desktop / MuMu专版) Nix 启动工具
+阴阳师桌面版 (Onmyoji Desktop / PC互通版) Nix 启动工具
 
 用法:
-  nix run                          启动游戏 (未安装时自动下载并启动安装器)
+  nix run                          启动游戏 (未安装时自动引导安装或提示)
   nix run . -- [选项]              传递参数控制运行方式
 
 选项:
-  --install                        强制运行官方安装程序
+  --install                        运行官方 MuMu 专版安装程序 (链接: yxyys_mumu12)
   --installer <路径>               使用指定的本地安装包运行安装
-  --run <可执行程序相对路径>       直接运行 WINEPREFIX 内指定的游戏可执行文件
+  --import <目录或压缩包>          导入并解压现有的阴阳师客户端 (支持官方原生 PC 互通版)
+  --run <可执行程序路径>           直接运行指定的 Windows 可执行文件
   --winecfg                        打开该隔离环境的 Wine 配置面板 (winecfg)
   --regedit                        打开该隔离环境的注册表编辑器 (regedit)
   --winetricks [参数...]           在当前独立隔离环境中运行 winetricks
@@ -59,6 +61,15 @@ show_help() {
   --status                         查看当前隔离环境状态、安装路径与磁盘占用
   --clean                          删除当前隔离环境数据 (清理缓存及前缀)
   --help, -h                       显示此帮助信息
+
+说明:
+  1. 链接 yxyys_mumu12 是网易官方提供的 MuMu 模拟器专版。注意: 由于该模拟器深度依赖
+     Windows 内核硬件虚拟化驱动 (MuMuNxSup.sys / VirtualBox驱动)，在 Linux Wine 用户态
+     环境下可能因无法加载内核级驱动而提示错误码 13 / 11001。
+  2. 若遇到模拟器内核驱动限制，强烈推荐使用网易官方原生的【阴阳师 PC 桌面互通版】
+     (基于网易自研 NeoX 引擎，纯原生 DirectX/Vulkan 客户端，无需任何模拟器)：
+     官方下载源: https://g37.gdl.netease.com/yys_win32_20250919.zip
+     下载后使用: nix run . -- --import <yys_win32_20250919.zip 或解压后的目录>
 
 环境变量:
   YYS_DATA_DIR                     自定义数据存储根路径 (默认: ~/.local/share/yys)
@@ -143,18 +154,24 @@ init_wineprefix() {
 
 find_installed_exe() {
   local candidates=(
+    "${DATA_DIR}/client/Launch.exe"
+    "${DATA_DIR}/client/onmyoji.exe"
+    "${DATA_DIR}/Launch.exe"
+    "${DATA_DIR}/onmyoji.exe"
+    "${PWD}/Launch.exe"
+    "${PWD}/onmyoji.exe"
+    "${WINEPREFIX}/drive_c/Onmyoji/Launch.exe"
+    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/Launch.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/Launch.exe"
+    "${WINEPREFIX}/drive_c/Onmyoji/onmyoji.exe"
+    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/onmyoji.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/onmyoji.exe"
     "${WINEPREFIX}/drive_c/Program Files/Nemu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files/MuMu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files (x86)/Nemu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files (x86)/MuMu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files/MuMuPlayer-12.0/shell/MuMuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files (x86)/MuMuPlayer-12.0/shell/MuMuPlayer.exe"
-    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/Launch.exe"
-    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/Launch.exe"
-    "${WINEPREFIX}/drive_c/Onmyoji/Launch.exe"
-    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/onmyoji.exe"
-    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/onmyoji.exe"
-    "${WINEPREFIX}/drive_c/Onmyoji/onmyoji.exe"
   )
 
   for cand in "${candidates[@]}"; do
@@ -164,9 +181,9 @@ find_installed_exe() {
     fi
   done
 
-  # 备用方案: 扫描 drive_c 下的主可执行程序
+  # 备用方案: 扫描 drive_c 或 DATA_DIR 下的主可执行程序
   local fallback
-  fallback=$(find "${WINEPREFIX}/drive_c" -maxdepth 6 \( -iname "NemuPlayer.exe" -o -iname "MuMuPlayer.exe" -o -iname "Launch.exe" \) 2>/dev/null | head -n 1 || true)
+  fallback=$(find "${DATA_DIR}" "${WINEPREFIX}/drive_c" -maxdepth 6 \( -iname "Launch.exe" -o -iname "onmyoji.exe" -o -iname "NemuPlayer.exe" -o -iname "MuMuPlayer.exe" \) 2>/dev/null | head -n 1 || true)
   if [ -n "${fallback}" ] && [ -f "${fallback}" ]; then
     echo "${fallback}"
     return 0
@@ -208,12 +225,58 @@ run_installer() {
 
   init_wineprefix
   echo ">> [3/3] 正在启动官方安装向导..."
-  echo ">> 提示: 请在弹出的图形窗口中根据提示点击“立即安装”。安装文件将自动保存在隔离目录中。"
+  echo ">> 注意事项:"
+  echo "   当前链接 (yxyys_mumu12) 为网易 MuMu 模拟器渠道包，该包需在 Windows 安装内核级虚拟化驱动。"
+  echo "   在 Linux/Wine 环境下若点击安装提示“错误码: 13 / 11001”，系因 Wine 无法加载 Windows 内核驱动导致。"
+  echo "   如遇此情况，推荐使用网易官方原生的【阴阳师 PC 桌面互通版】(免模拟器，原生 NeoX 引擎)："
+  echo "   下载: https://g37.gdl.netease.com/yys_win32_20250919.zip"
+  echo "   导入: nix run . -- --import yys_win32_20250919.zip"
+  echo "   ------------------------------------------------------------"
 
   wine "${installer_path}"
 }
 
-clean_data() {
+import_client() {
+  local src="$1"
+  if [ -z "${src}" ] || [ ! -e "${src}" ]; then
+    echo "错误: 未找到要导入的客户端路径: ${src}" >&2
+    exit 1
+  fi
+
+  local target_dir="${DATA_DIR}/client"
+  mkdir -p "${target_dir}"
+
+  if [ -d "${src}" ]; then
+    echo ">> 正在从目录导入客户端至: ${target_dir} ..."
+    cp -rn "${src}"/* "${target_dir}/"
+  elif [[ "${src}" =~ \.(zip|7z)$ ]]; then
+    echo ">> 正在解压客户端压缩包至: ${target_dir} ..."
+    7z x "${src}" -o"${target_dir}"
+    # 如果解压出来是包含单层子目录的，平铺至 client
+    if [ -d "${target_dir}/yys_win32_"* ]; then
+      local sub
+      sub=$(find "${target_dir}" -maxdepth 1 -type d -name "yys_win32_*" | head -n 1)
+      if [ -n "${sub}" ]; then
+        mv "${sub}"/* "${target_dir}/" 2>/dev/null || true
+        rm -rf "${sub}"
+      fi
+    fi
+  else
+    echo "错误: 不支持的文件格式，仅支持目录、.zip 或 .7z 压缩包。" >&2
+    exit 1
+  fi
+
+  init_wineprefix
+  echo ">> 客户端导入完成！"
+  local exe
+  if exe=$(find_installed_exe 2>/dev/null); then
+    echo ">> 找到启动程序: ${exe}"
+    echo ">> 正在启动..."
+    wine "${exe}"
+  else
+    echo ">> 提示: 请检查导入目录中是否包含 Launch.exe 或 onmyoji.exe。"
+  fi
+}
   echo ">> 警告: 即将删除当前项目的隔离数据与所有已安装文件:"
   echo "   ${DATA_DIR}"
   read -r -p "确认清理？[y/N] " confirm
@@ -264,9 +327,9 @@ while [ $# -gt 0 ]; do
       ACTION="install"
       shift
       ;;
-    --installer)
-      ACTION="install"
-      CUSTOM_INSTALLER="$2"
+    --import)
+      ACTION="import"
+      IMPORT_PATH="$2"
       shift 2
       ;;
     --run)
@@ -314,6 +377,9 @@ done
 case "${ACTION}" in
   status)
     show_status
+    ;;
+  import)
+    import_client "${IMPORT_PATH}"
     ;;
   clean)
     clean_data
