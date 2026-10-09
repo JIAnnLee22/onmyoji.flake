@@ -237,11 +237,14 @@ run_installer() {
 }
 
 import_client() {
-  local src="$1"
-  if [ -z "${src}" ] || [ ! -e "${src}" ]; then
-    echo "错误: 未找到要导入的客户端路径: ${src}" >&2
+  local raw_src="$1"
+  if [ -z "${raw_src}" ] || [ ! -e "${raw_src}" ]; then
+    echo "错误: 未找到要导入的客户端路径: ${raw_src}" >&2
     exit 1
   fi
+
+  local src
+  src="$(readlink -f "${raw_src}" 2>/dev/null || realpath "${raw_src}" 2>/dev/null || echo "${raw_src}")"
 
   local target_dir="${DATA_DIR}/client"
   mkdir -p "${target_dir}"
@@ -251,15 +254,16 @@ import_client() {
     cp -rn "${src}"/* "${target_dir}/"
   elif [[ "${src}" =~ \.(zip|7z)$ ]]; then
     echo ">> 正在解压客户端压缩包至: ${target_dir} ..."
-    7z x "${src}" -o"${target_dir}"
-    # 如果解压出来是包含单层子目录的，平铺至 client
-    if [ -d "${target_dir}/yys_win32_"* ]; then
-      local sub
-      sub=$(find "${target_dir}" -maxdepth 1 -type d -name "yys_win32_*" | head -n 1)
-      if [ -n "${sub}" ]; then
-        mv "${sub}"/* "${target_dir}/" 2>/dev/null || true
-        rm -rf "${sub}"
-      fi
+    7z x -y "${src}" -o"${target_dir}"
+    # 如果解压后存在单层嵌套子目录，平铺至 target_dir
+    local sub
+    sub=$(find "${target_dir}" -maxdepth 1 -mindepth 1 -type d \( -name "yys_win32_*" -o -name "Onmyoji*" -o -name "yys*" \) 2>/dev/null | head -n 1 || true)
+    if [ -n "${sub}" ] && [ -d "${sub}" ] && [ -f "${sub}/Launch.exe" -o -f "${sub}/onmyoji.exe" ]; then
+      echo ">> 整理客户端子目录文件结构 (${sub}) ..."
+      shopt -s dotglob
+      mv "${sub}"/* "${target_dir}/" 2>/dev/null || true
+      shopt -u dotglob
+      rmdir "${sub}" 2>/dev/null || true
     fi
   else
     echo "错误: 不支持的文件格式，仅支持目录、.zip 或 .7z 压缩包。" >&2
@@ -274,9 +278,11 @@ import_client() {
     echo ">> 正在启动..."
     wine "${exe}"
   else
-    echo ">> 提示: 请检查导入目录中是否包含 Launch.exe 或 onmyoji.exe。"
+    echo ">> 提示: 未在 ${target_dir} 自动检测到 Launch.exe 或 onmyoji.exe，请检查解压内容。"
   fi
 }
+
+clean_data() {
   echo ">> 警告: 即将删除当前项目的隔离数据与所有已安装文件:"
   echo "   ${DATA_DIR}"
   read -r -p "确认清理？[y/N] " confirm
