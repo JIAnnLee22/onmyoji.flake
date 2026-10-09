@@ -58,6 +58,7 @@ show_help() {
   nix run . -- [选项]              传递参数控制运行方式
 
 选项:
+  --desktop [分辨率]               使用 Wine 虚拟桌面模式启动 (解决平铺窗口管理器窗口挤压，默认 1920x1080)
   --install                        运行官方 MuMu 专版安装程序 (链接: yxyys_mumu12)
   --installer <路径>               使用指定的本地安装包运行安装
   --import <目录或压缩包>          导入并解压现有的阴阳师客户端 (支持官方原生 PC 互通版)
@@ -246,7 +247,15 @@ run_installed_game() {
   fi
 
   cd "${app_dir}"
-  exec wine "$(basename "${target_exe}")" "$@"
+
+  if [ "${USE_DESKTOP:-0}" = "1" ] || [ -n "${YYS_DESKTOP:-}" ]; then
+    local res="${DESKTOP_RES:-${YYS_DESKTOP:-1920x1080}}"
+    [ "${res}" = "1" ] && res="1920x1080"
+    echo ">> 启用 Wine 虚拟桌面模式 (${res}) ..."
+    exec wine explorer.exe "/desktop=yys,${res}" "$(basename "${target_exe}")" "$@"
+  else
+    exec wine "$(basename "${target_exe}")" "$@"
+  fi
 }
 
 run_installer() {
@@ -363,6 +372,15 @@ CUSTOM_INSTALLER=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
+    --desktop)
+      USE_DESKTOP="1"
+      if [ $# -gt 1 ] && [[ "$2" =~ ^[0-9]+x[0-9]+$ ]]; then
+        DESKTOP_RES="$2"
+        shift 2
+      else
+        shift
+      fi
+      ;;
     --install)
       ACTION="install"
       shift

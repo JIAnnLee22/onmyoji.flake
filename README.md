@@ -74,6 +74,8 @@ YYS_PORTABLE=1 nix run
 
 | 命令 | 说明 |
 | :--- | :--- |
+| `nix run . -- --desktop` | 启用 Wine 虚拟桌面启动 (推荐平铺窗口管理器 Mango/Hyprland 使用，防止窗口挤压) |
+| `nix run . -- --desktop 1280x720` | 自定义虚拟桌面分辨率 (默认: 1920x1080) |
 | `nix run . -- --status` | 查看当前隔离环境初始化状态、安装路径与磁盘占用 |
 | `nix run . -- --install` | 强制重新启动官方安装程序 |
 | `nix run . -- --installer <路径>` | 使用本地已有的安装包运行安装 |
