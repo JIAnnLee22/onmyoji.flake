@@ -1,0 +1,367 @@
+#!/usr/bin/env bash
+set -eo pipefail
+
+# ==============================================================================
+# 阴阳师桌面版 (MuMu专版 / 互通版) Nix 启动包装器
+# 官方下载源: https://adl.netease.com/d/g/a11/c/yxyys_mumu12
+# 特性: 独立隔离 WINEPREFIX, 自动中文字体渲染与注册表注入, 杜绝系统菜单污染
+# ==============================================================================
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SHARE_DIR="${SCRIPT_DIR}/../share"
+if [ ! -d "${SHARE_DIR}" ] && [ -d "${SCRIPT_DIR}/share" ]; then
+  SHARE_DIR="${SCRIPT_DIR}/share"
+fi
+
+# 1. 确定数据隔离目录 (优先级: YYS_DATA_DIR > YYS_PORTABLE > XDG_DATA_HOME/yys)
+if [ -n "${YYS_DATA_DIR:-}" ]; then
+  DATA_DIR="${YYS_DATA_DIR}"
+elif [ "${YYS_PORTABLE:-0}" = "1" ]; then
+  DATA_DIR="${PWD}/.data"
+else
+  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/yys"
+fi
+
+WINEPREFIX="${DATA_DIR}/wine"
+INSTALLER_DIR="${DATA_DIR}/installer"
+INSTALLER_FILE="${INSTALLER_DIR}/yxyys_mumu12_setup.exe"
+OFFICIAL_PAGE_URL="https://adl.netease.com/d/g/a11/c/yxyys_mumu12"
+OFFICIAL_DOWNLOAD_URL="https://mumu.nie.netease.com/api/dl/win?channel=yx-yys"
+
+# 2. 导出 Wine 隔离与环境配置
+export WINEPREFIX
+export WINEARCH="win64"
+export WINEDEBUG="${YYS_WINEDEBUG:--all}"
+
+# 关键系统隔离: 禁用 winemenubuilder，禁止向宿主系统注册 .desktop 快捷方式及文件关联
+export WINEDLLOVERRIDES="winemenubuilder.exe=d;mscoree=d;mshtml=d"
+
+# 强制中文语言环境，保证 Wine 内部文字编码与语言环境一致
+export LANG="${LANG:-zh_CN.UTF-8}"
+export LC_ALL="${LC_ALL:-zh_CN.UTF-8}"
+
+show_help() {
+  cat <<EOF
+阴阳师桌面版 (Onmyoji Desktop / MuMu专版) Nix 启动工具
+
+用法:
+  nix run                          启动游戏 (未安装时自动下载并启动安装器)
+  nix run . -- [选项]              传递参数控制运行方式
+
+选项:
+  --install                        强制运行官方安装程序
+  --installer <路径>               使用指定的本地安装包运行安装
+  --run <可执行程序相对路径>       直接运行 WINEPREFIX 内指定的游戏可执行文件
+  --winecfg                        打开该隔离环境的 Wine 配置面板 (winecfg)
+  --regedit                        打开该隔离环境的注册表编辑器 (regedit)
+  --winetricks [参数...]           在当前独立隔离环境中运行 winetricks
+  --cmd                            打开当前环境的 Windows CMD 命令行
+  --status                         查看当前隔离环境状态、安装路径与磁盘占用
+  --clean                          删除当前隔离环境数据 (清理缓存及前缀)
+  --help, -h                       显示此帮助信息
+
+环境变量:
+  YYS_DATA_DIR                     自定义数据存储根路径 (默认: ~/.local/share/yys)
+  YYS_PORTABLE=1                   启用便携模式，数据保存在当前目录 .data/
+  YYS_DPI=<数值>                   自定义 Wine DPI 缩放 (如 96, 120, 144)
+  YYS_WINEDEBUG=<等级>             调试级别 (默认: -all)
+EOF
+}
+
+setup_prefix_fonts() {
+  local font_dir="${WINEPREFIX}/drive_c/windows/Fonts"
+  mkdir -p "${font_dir}"
+
+  # 寻找高质量思源黑体
+  local noto_font=""
+  if [ -n "${NOTO_CJK_FONT_PATH:-}" ] && [ -f "${NOTO_CJK_FONT_PATH}" ]; then
+    noto_font="${NOTO_CJK_FONT_PATH}"
+  elif [ -d "/nix/store" ]; then
+    noto_font="$(find /nix/store -name "NotoSansCJK-VF.otf.ttc" 2>/dev/null | head -n 1 || true)"
+  fi
+
+  if [ -n "${noto_font}" ] && [ -f "${noto_font}" ]; then
+    ln -sf "${noto_font}" "${font_dir}/NotoSansCJK-VF.otf.ttc"
+    ln -sf "${noto_font}" "${font_dir}/msyh.ttc"
+    ln -sf "${noto_font}" "${font_dir}/msyhbd.ttc"
+    ln -sf "${noto_font}" "${font_dir}/simsun.ttc"
+    ln -sf "${noto_font}" "${font_dir}/simhei.ttf"
+  fi
+
+  # 备用文泉驿正黑/微米黑
+  local wqy_font=""
+  if [ -n "${WQY_FONT_PATH:-}" ] && [ -f "${WQY_FONT_PATH}" ]; then
+    wqy_font="${WQY_FONT_PATH}"
+  fi
+  if [ -n "${wqy_font}" ] && [ -f "${wqy_font}" ]; then
+    if [ ! -f "${font_dir}/simsun.ttc" ]; then
+      ln -sf "${wqy_font}" "${font_dir}/simsun.ttc"
+    fi
+  fi
+
+  # 导入中文字体替换与渲染平滑注册表
+  local reg_file="${YYS_FONTS_REG:-}"
+  if [ -z "${reg_file}" ] || [ ! -f "${reg_file}" ]; then
+    if [ -f "${SHARE_DIR}/fonts.reg" ]; then
+      reg_file="${SHARE_DIR}/fonts.reg"
+    elif [ -f "${SCRIPT_DIR}/../share/fonts.reg" ]; then
+      reg_file="${SCRIPT_DIR}/../share/fonts.reg"
+    fi
+  fi
+
+  if [ -n "${reg_file}" ] && [ -f "${reg_file}" ]; then
+    wine regedit "${reg_file}" >/dev/null 2>&1 || true
+  fi
+
+  # 如果设置了 DPI，更新注册表
+  if [ -n "${YYS_DPI:-}" ]; then
+    local dpi_hex
+    dpi_hex=$(printf "%08x" "${YYS_DPI}")
+    local dpi_reg_tmp
+    dpi_reg_tmp="$(mktemp --suffix=.reg)"
+    cat <<EOF > "${dpi_reg_tmp}"
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"LogPixels"=dword:${dpi_hex}
+EOF
+    wine regedit "${dpi_reg_tmp}" >/dev/null 2>&1 || true
+    rm -f "${dpi_reg_tmp}"
+  fi
+}
+
+init_wineprefix() {
+  if [ ! -f "${WINEPREFIX}/system.reg" ]; then
+    echo ">> [1/3] 正在初始化独立的 Wine 环境..."
+    mkdir -p "${WINEPREFIX}"
+    wineboot -i >/dev/null 2>&1 || true
+  fi
+
+  echo ">> [2/3] 配置中文字体与字体抗锯齿渲染..."
+  setup_prefix_fonts
+}
+
+find_installed_exe() {
+  local candidates=(
+    "${WINEPREFIX}/drive_c/Program Files/Nemu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
+    "${WINEPREFIX}/drive_c/Program Files/MuMu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/Nemu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/MuMu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
+    "${WINEPREFIX}/drive_c/Program Files/MuMuPlayer-12.0/shell/MuMuPlayer.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/MuMuPlayer-12.0/shell/MuMuPlayer.exe"
+    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/Launch.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/Launch.exe"
+    "${WINEPREFIX}/drive_c/Onmyoji/Launch.exe"
+    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/onmyoji.exe"
+    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/onmyoji.exe"
+    "${WINEPREFIX}/drive_c/Onmyoji/onmyoji.exe"
+  )
+
+  for cand in "${candidates[@]}"; do
+    if [ -f "${cand}" ]; then
+      echo "${cand}"
+      return 0
+    fi
+  done
+
+  # 备用方案: 扫描 drive_c 下的主可执行程序
+  local fallback
+  fallback=$(find "${WINEPREFIX}/drive_c" -maxdepth 6 \( -iname "NemuPlayer.exe" -o -iname "MuMuPlayer.exe" -o -iname "Launch.exe" \) 2>/dev/null | head -n 1 || true)
+  if [ -n "${fallback}" ] && [ -f "${fallback}" ]; then
+    echo "${fallback}"
+    return 0
+  fi
+
+  return 1
+}
+
+download_installer() {
+  mkdir -p "${INSTALLER_DIR}"
+  if [ -f "${INSTALLER_FILE}" ] && [ -s "${INSTALLER_FILE}" ]; then
+    echo ">> 已检测到本地安装包缓存: ${INSTALLER_FILE}"
+    return 0
+  fi
+
+  echo ">> 正在从官方源下载阴阳师桌面版安装包..."
+  echo ">> 官方来源: ${OFFICIAL_PAGE_URL}"
+  echo ">> 下载目标: ${INSTALLER_FILE}"
+
+  if command -v curl >/dev/null 2>&1; then
+    curl -fL --progress-bar -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+      -o "${INSTALLER_FILE}" "${OFFICIAL_DOWNLOAD_URL}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget -q --show-progress -O "${INSTALLER_FILE}" "${OFFICIAL_DOWNLOAD_URL}"
+  else
+    echo "错误: 未找到 curl 或 wget 下载工具。" >&2
+    exit 1
+  fi
+
+  echo ">> 安装包下载完成。"
+}
+
+run_installer() {
+  local installer_path="${1:-$INSTALLER_FILE}"
+  if [ ! -f "${installer_path}" ]; then
+    download_installer
+    installer_path="${INSTALLER_FILE}"
+  fi
+
+  init_wineprefix
+  echo ">> [3/3] 正在启动官方安装向导..."
+  echo ">> 提示: 请在弹出的图形窗口中根据提示点击“立即安装”。安装文件将自动保存在隔离目录中。"
+
+  wine "${installer_path}"
+}
+
+clean_data() {
+  echo ">> 警告: 即将删除当前项目的隔离数据与所有已安装文件:"
+  echo "   ${DATA_DIR}"
+  read -r -p "确认清理？[y/N] " confirm
+  if [[ "${confirm}" =~ ^[Yy]$ ]]; then
+    rm -rf "${DATA_DIR}"
+    echo ">> 数据目录已清理完毕。"
+  else
+    echo ">> 已取消操作。"
+  fi
+}
+
+show_status() {
+  echo "=== 阴阳师桌面版隔离环境状态 ==="
+  echo "数据目录: ${DATA_DIR}"
+  echo "WinePrefix: ${WINEPREFIX}"
+  if [ -d "${WINEPREFIX}" ]; then
+    echo "WinePrefix 状态: 已初始化 ($(du -sh "${WINEPREFIX}" 2>/dev/null | awk '{print $1}'))"
+  else
+    echo "WinePrefix 状态: 未初始化"
+  fi
+
+  if [ -f "${INSTALLER_FILE}" ]; then
+    echo "安装包缓存: 已下载 ($(ls -lh "${INSTALLER_FILE}" | awk '{print $5}'))"
+  else
+    echo "安装包缓存: 未下载"
+  fi
+
+  local installed
+  if installed=$(find_installed_exe 2>/dev/null); then
+    echo "游戏安装状态: 已安装"
+    echo "游戏启动程序: ${installed}"
+  else
+    echo "游戏安装状态: 未安装"
+  fi
+}
+
+# ==============================================================================
+# 命令解析
+# ==============================================================================
+
+ACTION="auto"
+TARGET_EXE=""
+CUSTOM_INSTALLER=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --install)
+      ACTION="install"
+      shift
+      ;;
+    --installer)
+      ACTION="install"
+      CUSTOM_INSTALLER="$2"
+      shift 2
+      ;;
+    --run)
+      ACTION="run"
+      TARGET_EXE="$2"
+      shift 2
+      ;;
+    --winecfg)
+      ACTION="winecfg"
+      shift
+      ;;
+    --regedit)
+      ACTION="regedit"
+      shift
+      ;;
+    --winetricks)
+      ACTION="winetricks"
+      shift
+      break
+      ;;
+    --cmd)
+      ACTION="cmd"
+      shift
+      ;;
+    --status)
+      ACTION="status"
+      shift
+      ;;
+    --clean)
+      ACTION="clean"
+      shift
+      ;;
+    --help|-h)
+      show_help
+      exit 0
+      ;;
+    *)
+      echo "未知参数: $1" >&2
+      show_help
+      exit 1
+      ;;
+  esac
+done
+
+case "${ACTION}" in
+  status)
+    show_status
+    ;;
+  clean)
+    clean_data
+    ;;
+  winecfg)
+    init_wineprefix
+    wine winecfg
+    ;;
+  regedit)
+    init_wineprefix
+    wine regedit
+    ;;
+  cmd)
+    init_wineprefix
+    wine cmd
+    ;;
+  winetricks)
+    init_wineprefix
+    if command -v winetricks >/dev/null 2>&1; then
+      winetricks "$@"
+    else
+      echo "错误: 当前环境未找到 winetricks。" >&2
+      exit 1
+    fi
+    ;;
+  install)
+    run_installer "${CUSTOM_INSTALLER}"
+    ;;
+  run)
+    init_wineprefix
+    if [ -f "${TARGET_EXE}" ]; then
+      wine "${TARGET_EXE}"
+    elif [ -f "${WINEPREFIX}/drive_c/${TARGET_EXE}" ]; then
+      wine "${WINEPREFIX}/drive_c/${TARGET_EXE}"
+    else
+      echo "错误: 指定的可执行文件不存在: ${TARGET_EXE}" >&2
+      exit 1
+    fi
+    ;;
+  auto)
+    init_wineprefix
+    INSTALLED_EXE=$(find_installed_exe || true)
+    if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
+      echo ">> [3/3] 正在启动阴阳师桌面版..."
+      wine "${INSTALLED_EXE}"
+    else
+      echo ">> 检测到游戏尚未安装，准备启动官方安装向导..."
+      run_installer
+    fi
+    ;;
+esac

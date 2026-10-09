@@ -1,0 +1,12 @@
+# Nix build artifacts
+result
+result-*
+.direnv/
+
+# Local runtime & game data (when YYS_PORTABLE=1 or custom)
+.data/
+*.exe
+*.7z
+*.zip
+*.log
+*.tmp

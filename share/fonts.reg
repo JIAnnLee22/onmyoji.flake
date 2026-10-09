@@ -1,0 +1,27 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Wine\Fonts\Replacements]
+"MS Gothic"="Noto Sans CJK SC"
+"MS PGothic"="Noto Sans CJK SC"
+"SimSun"="Noto Sans CJK SC"
+"NSimSun"="Noto Sans CJK SC"
+"SimHei"="Noto Sans CJK SC"
+"Microsoft YaHei"="Noto Sans CJK SC"
+"Microsoft YaHei UI"="Noto Sans CJK SC"
+"Tahoma"="Noto Sans CJK SC"
+"Arial"="Noto Sans CJK SC"
+
+[HKEY_LOCAL_MACHINE\Software\Microsoft\Windows NT\CurrentVersion\FontSubstitutes]
+"MS Shell Dlg"="Microsoft YaHei"
+"MS Shell Dlg 2"="Microsoft YaHei"
+"SimSun"="Noto Sans CJK SC"
+"NSimSun"="Noto Sans CJK SC"
+"SimHei"="Noto Sans CJK SC"
+"Microsoft YaHei"="Noto Sans CJK SC"
+"Microsoft YaHei UI"="Noto Sans CJK SC"
+
+[HKEY_CURRENT_USER\Control Panel\Desktop]
+"FontSmoothing"="2"
+"FontSmoothingType"=dword:00000002
+"FontSmoothingOrientation"=dword:00000001
+"FontSmoothingGamma"=dword:000003e8
