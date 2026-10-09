@@ -248,7 +248,7 @@ run_installed_game() {
 
   cd "${app_dir}"
 
-  if [ "${USE_DESKTOP:-0}" = "1" ] || [ -n "${YYS_DESKTOP:-}" ]; then
+  if { [ "${USE_DESKTOP:-0}" = "1" ] || [ -n "${YYS_DESKTOP:-}" ]; } && [ "${YYS_DESKTOP:-}" != "0" ]; then
     local res="${DESKTOP_RES:-${YYS_DESKTOP:-1920x1080}}"
     [ "${res}" = "1" ] && res="1920x1080"
     echo ">> 启用 Wine 虚拟桌面模式 (${res}) ..."
@@ -381,6 +381,11 @@ while [ $# -gt 0 ]; do
         shift
       fi
       ;;
+    --no-desktop)
+      USE_DESKTOP="0"
+      YYS_DESKTOP="0"
+      shift
+      ;;
     --install)
       ACTION="install"
       shift
@@ -481,6 +486,15 @@ case "${ACTION}" in
     init_wineprefix
     INSTALLED_EXE=$(find_installed_exe || true)
     if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
+      # 智能检测: 平铺桌面环境自动默认开启虚拟桌面防挤压
+      if [ -z "${USE_DESKTOP:-}" ] && [ "${YYS_DESKTOP:-}" != "0" ]; then
+        case "${XDG_CURRENT_DESKTOP,,}" in
+          *mango*|*hyprland*|*sway*|*i3*)
+            USE_DESKTOP="1"
+            DESKTOP_RES="${DESKTOP_RES:-1920x1080}"
+            ;;
+        esac
+      fi
       run_installed_game "${INSTALLED_EXE}" "$@"
     else
       echo ">> 检测到游戏尚未安装，准备启动官方安装向导..."
