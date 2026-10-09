@@ -17,7 +17,7 @@
       packages = forAllSystems (system:
         let
           pkgs = pkgsFor system;
-          winePkg = pkgs.wineWow64Packages.stable;
+          winePkg = pkgs.wineWow64Packages.staging;
           launcher = pkgs.stdenv.mkDerivation {
             pname = "yys-launcher";
             version = "1.0.0";
@@ -67,7 +67,7 @@
         in {
           default = pkgs.mkShell {
             packages = [
-              pkgs.wineWow64Packages.stable
+              pkgs.wineWow64Packages.staging
               pkgs.winetricks
               pkgs.noto-fonts-cjk-sans
               pkgs.wqy_zenhei

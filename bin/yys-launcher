@@ -41,6 +41,14 @@ export WINEDLLOVERRIDES="winemenubuilder.exe=d;mscoree=d;mshtml=d"
 export LANG="${LANG:-zh_CN.UTF-8}"
 export LC_ALL="${LC_ALL:-zh_CN.UTF-8}"
 
+# 宿主 GPU 驱动路径穿透 (解决 NixOS / Linux 下 NVIDIA/Mesa EGL 与 DRI/OpenGL 初始化)
+if [ -d "/run/opengl-driver/lib" ]; then
+  export LD_LIBRARY_PATH="/run/opengl-driver/lib:${LD_LIBRARY_PATH:-}"
+fi
+if [ -d "/run/opengl-driver-32/lib" ]; then
+  export LD_LIBRARY_PATH="/run/opengl-driver-32/lib:${LD_LIBRARY_PATH:-}"
+fi
+
 show_help() {
   cat <<EOF
 阴阳师桌面版 (Onmyoji Desktop / PC互通版) Nix 启动工具
@@ -154,18 +162,19 @@ init_wineprefix() {
 
 find_installed_exe() {
   local candidates=(
+    "${DATA_DIR}/client/bin/onmyoji.exe"
     "${DATA_DIR}/client/Launch.exe"
     "${DATA_DIR}/client/onmyoji.exe"
+    "${DATA_DIR}/bin/onmyoji.exe"
     "${DATA_DIR}/Launch.exe"
     "${DATA_DIR}/onmyoji.exe"
+    "${PWD}/client/bin/onmyoji.exe"
     "${PWD}/Launch.exe"
-    "${PWD}/onmyoji.exe"
+    "${PWD}/bin/onmyoji.exe"
+    "${WINEPREFIX}/drive_c/Onmyoji/bin/onmyoji.exe"
     "${WINEPREFIX}/drive_c/Onmyoji/Launch.exe"
     "${WINEPREFIX}/drive_c/Program Files/Onmyoji/Launch.exe"
     "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/Launch.exe"
-    "${WINEPREFIX}/drive_c/Onmyoji/onmyoji.exe"
-    "${WINEPREFIX}/drive_c/Program Files/Onmyoji/onmyoji.exe"
-    "${WINEPREFIX}/drive_c/Program Files (x86)/Onmyoji/onmyoji.exe"
     "${WINEPREFIX}/drive_c/Program Files/Nemu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files/MuMu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
     "${WINEPREFIX}/drive_c/Program Files (x86)/Nemu/emulator/nemu/EmulatorShell/NemuPlayer.exe"
@@ -276,7 +285,8 @@ import_client() {
   if exe=$(find_installed_exe 2>/dev/null); then
     echo ">> 找到启动程序: ${exe}"
     echo ">> 正在启动..."
-    wine "${exe}"
+    cd "$(dirname "${exe}")"
+    wine "$(basename "${exe}")"
   else
     echo ">> 提示: 未在 ${target_dir} 自动检测到 Launch.exe 或 onmyoji.exe，请检查解压内容。"
   fi
@@ -417,9 +427,12 @@ case "${ACTION}" in
   run)
     init_wineprefix
     if [ -f "${TARGET_EXE}" ]; then
-      wine "${TARGET_EXE}"
+      cd "$(dirname "${TARGET_EXE}")"
+      wine "$(basename "${TARGET_EXE}")"
     elif [ -f "${WINEPREFIX}/drive_c/${TARGET_EXE}" ]; then
-      wine "${WINEPREFIX}/drive_c/${TARGET_EXE}"
+      local full="${WINEPREFIX}/drive_c/${TARGET_EXE}"
+      cd "$(dirname "${full}")"
+      wine "$(basename "${full}")"
     else
       echo "错误: 指定的可执行文件不存在: ${TARGET_EXE}" >&2
       exit 1
@@ -429,8 +442,9 @@ case "${ACTION}" in
     init_wineprefix
     INSTALLED_EXE=$(find_installed_exe || true)
     if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
-      echo ">> [3/3] 正在启动阴阳师桌面版..."
-      wine "${INSTALLED_EXE}"
+      echo ">> [3/3] 正在启动阴阳师桌面版 (${INSTALLED_EXE})..."
+      cd "$(dirname "${INSTALLED_EXE}")"
+      wine "$(basename "${INSTALLED_EXE}")"
     else
       echo ">> 检测到游戏尚未安装，准备启动官方安装向导..."
       run_installer
