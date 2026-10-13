@@ -3,7 +3,7 @@ result
 result-*
 .direnv/
 
-# Local runtime & game data (when YYS_PORTABLE=1 or custom)
+# Local runtime & game data (when ONMYOJI_PORTABLE=1 or custom)
 .data/
 *.exe
 *.7z

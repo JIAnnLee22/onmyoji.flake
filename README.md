@@ -1,75 +1,71 @@
 # 阴阳师桌面版 (Onmyoji Desktop / Nix)
 
-基于 Nix Flake 与 Wine 深度隔离封装的网易《阴阳师》桌面版运行环境。
-
-官方源地址：[阴阳师桌面版 (MuMu专版)](https://adl.netease.com/d/g/a11/c/yxyys_mumu12)
+基于 Nix Flake 与 Wine 深度隔离封装的网易《阴阳师》桌面版运行环境。全自动化安装、多显卡通用驱动穿透、中文字体渲染优化与独立隔离。
 
 ---
 
 ## 核心特性
 
-- **开箱即用**：在新电脑上仅需 `nix run`，自动拉取运行依赖（Wine、字体、工具链），未安装时自动下载官方安装包并引导安装。
+- **开箱即用与全自动部署**：
+  在新电脑上仅需 `nix run`，自动拉取运行依赖（Wine-Staging、DXVK、字体、工具链）。
+  - **智能本地缓存**：自动扫描项目目录、上级目录及系统下载目录中的离线压缩包（如 `onmyoji.zip`），一键自动解压和配置；
+  - **自动断点续传**：未检测到本地包时，全自动通过网易官方 CDN 断点续传下载原生 PC 客户端，无需任何手动介入；
+  - **全自动环境优化**：自动修补 NeoX 引擎着色器持久化、提升 60 帧、部署微软原生 Direct3D 编译器与 DXVK 异步渲染。
+- **系统桌面集成 (Desktop Entry)**：
+  - 自动向桌面环境 (`~/.local/share/applications` 及 `icons`) 注册标准应用入口与 256x256 高清官方图标；
+  - 启动器（GNOME、KDE、Rofi、Wofi 等）可直接搜索“阴阳师”或“Onmyoji”一键启动。
+- **全显卡通用兼容 (AMD / Intel / NVIDIA)**：
+  - **非 NVIDIA 专用**：底层采用标准 Vulkan (DXVK 2.x) 与 Wine-Staging，原生支持 AMD (RADV)、Intel (ANV/Iris) 与 NVIDIA 显卡；
+  - 智能穿透宿主 GPU 驱动（包括 NixOS 的 `/run/opengl-driver`）并自动启用对应驱动的磁盘着色器缓存（Mesa 与 NVIDIA 均独立持久化）；
+  - 完美支持双显卡笔记本（可用 `DRI_PRIME=1` 或 `prime-run` 自由切换）及各类掌机设备。
 - **中文字体深度优化**：
   - 自动注入高质量开源中文字体（思源黑体 `Noto Sans CJK SC` 及文泉驿正黑）；
   - 自动创建 Windows 核心字体软链接（`msyh.ttc`、`simsun.ttc`、`simhei.ttf` 等）；
   - 自动导入 Wine 字体替换映射表（`FontSubstitutes` 与 `Replacements`），彻底杜绝方块字、乱码与字体缺失；
   - 启用 LCD 字体平滑抗锯齿（FontSmoothing），字体清晰锐利。
 - **系统零污染与完全隔离**：
-  - 独立独立的 `WINEPREFIX`，不干扰用户全局 `~/.wine` 或其他 Wine 游戏配置；
-  - 禁用 `winemenubuilder`，禁止向宿主 Linux 桌面写入 `.desktop` 图标及篡改系统文件 MIME 关联；
-  - 数据默认存储在 `$XDG_DATA_HOME/yys`（即 `~/.local/share/yys`），卸载只需一行命令清理该目录；
+  - 独立的 `WINEPREFIX`，不干扰用户全局 `~/.wine` 或其他游戏配置；
+  - 禁用 `winemenubuilder`，禁止篡改系统 MIME 关联；
+  - 数据默认存储在 `$XDG_DATA_HOME/onmyoji`（即 `~/.local/share/onmyoji`），卸载只需删除该目录；
   - 支持便携模式（数据保存在当前仓库目录下的 `.data/`）。
 - **游戏级渲染与多线程优化**：
-  - 自动集成 **DXVK 2.x**（DirectX 11 -> Vulkan 高性能转换），彻底告别 Wine 自带 WineD3D (OpenGL) 的低帧率与着色器报错；
-  - 自动启用 **FSync / ESync**（futex 内核级线程同步），绕过 wineserver 锁争用，大幅减少多线程微卡顿（Stuttering）；
-  - 着色器与管线磁盘缓存（Shader Disk Cache + DXVK State Cache）自动持久化在独立数据目录下，消除战斗中即时编译卡顿；
-  - 支持一键开启 DXVK HUD 性能监视器查看实时帧率与显卡开销。
-- **跨机器可移植**：整个运行栈通过 Nix 描述声明，推送到 Git 仓库后，其他 Linux 设备一键克隆即可运行。
+  - **DXVK 2.x**：DirectX 11 -> Vulkan 高性能转换；
+  - **FSync / ESync**：futex 内核级线程同步，绕过 wineserver 锁争用，大幅减少多线程卡顿；
+  - **微软原生 Shader 编译器**：自动挂载原生 `d3dcompiler_47.dll`，转场与场景切换加载提速至毫秒级。
 
 ---
 
-## 版本说明与安装注意
+## 快速使用
 
-网易官方提供了两种不同的 PC 端体验形式：
+### 1. 首次启动与全自动安装
 
-### 1. 官方原生 PC 桌面互通版 (推荐)
-- **引擎**：网易自研 NeoX 原生游戏引擎（非模拟器，纯原生 Windows DirectX 客户端）。
-- **Linux/Wine 兼容性**：可通过 Wine 运行，具体渲染及登录表现取决于 Wine 版本、显卡驱动与客户端更新；不保证所有环境均兼容。
-- **获取方式**：
-  官方高防 CDN 免安装压缩包：[yys_win32_20250919.zip](https://g37.gdl.netease.com/yys_win32_20250919.zip) (约 19.8 GB)。
-  下载完成后，使用一条命令导入即可直接启动：
-  ```bash
-  nix run . -- --import /path/to/yys_win32_20250919.zip
-  ```
-  或者将已解压的客户端文件夹导入：
-  ```bash
-  nix run . -- --import /path/to/Onmyoji_Directory
-  ```
-
-### 2. MuMu 模拟器专版 (`yxyys_mumu12`)
-- **引擎**：Windows 版 MuMu 12 Android 模拟器。
-- **Linux/Wine 兼容性**：在点击安装时可能会提示 **“安装出错，错误码: 13 / 11001”**。
-  - **根因分析**：MuMu 模拟器底层依赖 `MuMuNxSup.sys` 等 Windows Ring 0 内核级硬件虚拟化驱动（魔改自 VirtualBox/Hyper-V 内核模块）。Linux 下的 Wine 作为用户态系统调用兼容层，无法加载 Windows 内核驱动（日志报 `sc query MuMuNxSup ... RUNNING failure`，`DoInstallHypervisor: failed`）。
-  - **建议**：在 Linux 下请直接使用上述**原生 PC 桌面互通版**，无需也不建议使用安卓模拟器套壳。
-
-### 1. 启动游戏 / 首次安装
-
-在项目根目录下直接运行：
+在克隆的项目目录下直接运行：
 
 ```bash
 nix run
 ```
 
-- **初次运行**：自动下载官方安装包并打开图形安装向导，根据提示点击“立即安装”即可。
-- **后续运行**：自动识别已安装的客户端路径并直接拉起游戏。
+- **存在本地压缩包时**：若当前目录或下载目录已有 `onmyoji.zip`，启动器将自动解压、部署并拉起游戏；
+- **全新机器无离线包时**：启动器会自动从网易官方 CDN 下载原生 PC 互通版压缩包并自动部署；
+- 部署完成后将自动注册桌面图标，后续可在应用菜单中直接点击启动。
 
-### 2. 便携模式 (适合放置于独立硬盘或移动存储)
+### 2. 便携模式 (适合放置于移动硬盘或独立路径)
 
 ```bash
-YYS_PORTABLE=1 nix run
+ONMYOJI_PORTABLE=1 nix run
 ```
 
-便携模式下，所有的 Wine 容器、游戏文件和缓存均保存在当前项目目录下的 `.data/` 目录中。
+便携模式下，所有的 Wine 容器、游戏客户端和缓存均保存在当前项目目录下的 `.data/` 中，拷贝至任意 Linux 设备插上即可直接运行。
+
+### 3. 一键导出缓存 (方便带到其他电脑)
+
+当当前电脑已安装好客户端后，可一键将其打包导出为离线缓存包：
+
+```bash
+nix run . -- --export-cache /path/to/onmyoji.zip
+```
+
+在另一台电脑上只需将该 `onmyoji.zip` 放在项目目录，运行 `nix run` 即刻秒级完成部署，无需重新下载。
 
 ---
 
@@ -79,49 +75,66 @@ YYS_PORTABLE=1 nix run
 
 | 命令 | 说明 |
 | :--- | :--- |
-| `nix run` | 直接启动游戏 (默认在当前桌面以原生独立悬浮窗口运行，无需虚拟桌面) |
+| `nix run` | 直接启动游戏 (默认在当前桌面以原生独立窗口运行) |
 | `nix run . -- --desktop` | 选用 Wine 虚拟桌面模式启动 (默认 1920x1080) |
 | `nix run . -- --desktop 1280x720` | 自定义虚拟桌面分辨率 |
-| `nix run . -- --hud` | 启用 DXVK 实时性能监视面板 (查看实时帧率 FPS、GPU 负载、显存) |
+| `nix run . -- --desktop-entry` | 手动在系统应用菜单中重新安装/更新桌面快捷方式与图标 |
+| `nix run . -- --hud` | 启用 DXVK 实时性能监视面板 (FPS、GPU负载、显存) |
 | `nix run . -- --no-dxvk` | 禁用 DXVK，回退到 Wine 自带的 WineD3D (OpenGL) 渲染 |
 | `nix run . -- --dxvk-install` | 强制重新部署/更新容器内的 DXVK DLL 软链接 |
 | `nix run . -- --dxvk-uninstall` | 卸载容器内的 DXVK，恢复 Wine 原生渲染 DLL |
-| `nix run . -- --status` | 查看当前隔离环境初始化状态、DXVK/FSync 状态与磁盘占用 |
-| `nix run . -- --install` | 强制重新启动官方安装程序 |
-| `nix run . -- --installer <路径>` | 使用本地已有的安装包运行安装 |
+| `nix run . -- --status` | 查看当前隔离环境初始化状态、显卡优化状态与磁盘占用 |
+| `nix run . -- --import <路径>` | 手动导入指定的客户端目录或压缩包 (.zip / .7z) |
+| `nix run . -- --export-cache <路径>` | 将当前就绪的客户端导出为缓存压缩包 |
 | `nix run . -- --winecfg` | 打开该独立容器的 Wine 图形配置面板 |
 | `nix run . -- --regedit` | 打开该独立容器的 Windows 注册表编辑器 |
 | `nix run . -- --winetricks <组件>` | 在当前独立容器内运行 winetricks 安装组件 |
-| `nix run . -- --clean` | 删除并清空当前独立容器及所有游戏数据（不留系统残留） |
+| `nix run . -- --clean` | 删除并清空当前独立容器及所有游戏数据（不留残留） |
 | `nix run . -- --help` | 查看详细帮助信息 |
 
 ---
 
-## 启动白屏排查
+## 环境变量配置
 
-原生客户端的 `bin/onmyoji.exe` 必须以客户端根目录作为工作目录。启动器会识别上层的 `neox.xml` 与 `res/`，从根目录运行；普通启动、`--run`、虚拟桌面和导入后的启动使用同一逻辑。
+可在启动前指定环境变量微调运行表现：
 
-不要进入 `client/bin` 后直接运行 `wine onmyoji.exe`，也不要仅靠补配置软链接修复。错误工作目录会导致日志出现 `bin/bin/res_render3.npk`、`cloud.json` 或 `thd/*.thx` 加载失败，以及核心着色器 `simpletech.nfx` 缺失，最终卡在白屏。客户端日志位于数据目录的 `client/Documents/log/`。
+```bash
+# 自定义数据存储目录 (默认: ~/.local/share/onmyoji)
+export ONMYOJI_DATA_DIR="/path/to/custom_storage"
 
-## 场景切换与转场卡顿排查 (耗时过长修复)
+# 指定离线安装包路径
+export ONMYOJI_CLIENT_ARCHIVE="/path/to/onmyoji.zip"
 
-若遇到**每次切换场景、进入庭院、副本或阴阳寮时转场时间极长（黑屏或纸人加载卡数秒）**，核心原因及本项目的自动化解决方案如下：
+# 设置 Wine 渲染 DPI (如 96 为 100%, 120 为 125%, 144 为 150%)
+export ONMYOJI_DPI=120
 
-1. **Direct3D 着色器编译器缺失 (最主要卡顿源)**：
-   - **根因**：转场淡入淡出、全屏后处理（`UberPost.hlsl`、高斯模糊、Bloom）需要运行时 HLSL 编译。Wine 自带的内建（builtin）`d3dcompiler_47.dll` 无法编译这些 Shader，导致单次转场卡死 2~3 秒，并向 `log.txt` 同步 dump 数万行代码，频繁冲爆 2MB 日志触发轮转与磁盘 I/O 阻塞。
-   - **修复**：启动器已自动将客户端内置的微软原生 `d3dcompiler_47.dll`、`D3DCompiler_43.dll` 软链注入容器 `system32`，并通过 `WINEDLLOVERRIDES` 和注册表优先加载原生 DLL，转场 Shader 编译直接提速至毫秒级。
-2. **NeoX 本地着色器缓存关闭**：
-   - **根因**：原版 `neox.xml` 默认 `UseShaderCache = 'False'`，每次转场均放弃本地已编译缓存，强制重新解析。
-   - **修复**：启动器自动将 `UseShaderCache` 修复为 `'True'`，编译结果持久化至本地，二次转场秒进。
-3. **默认帧率锁 30 FPS 导致转场动画时长翻倍**：
-   - **根因**：阴阳师 UI 和转场补间动画为基于帧数步进（Frame-based），默认 30 帧下所有转场动画播放时长翻倍。
-   - **修复**：启动器自动将 `clientconfig` 帧率设定提升至 60 帧（`frame_rate=2`），转场过渡体验大幅提速。
-4. **DXVK 异步管线加载与驱动直通**：
-   - 自动生成 `dxvk.conf` 启用异步管线编译（`dxvk.enableAsync = true`、`dxvk.gpl = true`）并解除 VSync 限制，配合 NVIDIA 硬件 Vulkan ICD 穿透，彻底消除掉帧。
+# 开启 DXVK 性能监控 HUD (显示 FPS、显卡型号、GPU 负载与显存)
+export ONMYOJI_HUD=1
 
-## 平铺桌面 (Mango / Hyprland) 浮动与登录后方黑框排查
+# 若遇到特定渲染异常，可强制禁用 DXVK 回退至 WineD3D (OpenGL)
+# export ONMYOJI_NO_DXVK=1
 
-网易 PC 登录扫码组件（UniSDK）在 Windows 下会伴随创建一个不接受输入的半透明阴影分层窗口（`WS_EX_LAYERED`，无标题）。在 Linux XWayland 环境下，平铺合成器（如 Mango）容易将其作为独立顶级窗口捕获并绘制边框（显示为 `title: broken` 的黑色方框垫在登录框后方）。
+# 禁用内核 FSync / ESync 线程同步加速
+# export ONMYOJI_NO_FSYNC=1
+# export ONMYOJI_NO_ESYNC=1
+
+# 开启 Wine 调试日志
+export ONMYOJI_WINEDEBUG="warn+all,err+all"
+```
+
+---
+
+## 常见问题与排查
+
+### 1. 非 NVIDIA 显卡能否使用？
+完全可以！本项目绝非 NVIDIA 专属：
+- **AMD 显卡**：自动匹配 Mesa RADV 驱动，原生支持 DXVK 与异步管线着色器缓存；
+- **Intel 显卡**：自动匹配 Mesa ANV / Iris 驱动；
+- **NVIDIA 显卡**：自动穿透硬件驱动与 Vulkan ICD；
+- **双显卡笔记本**：直接使用 `DRI_PRIME=1 nix run` 或 `prime-run nix run` 指定独立显卡运行。
+
+### 2. 平铺桌面 (Mango / Hyprland) 浮动与登录后方黑框排查
+网易 PC 登录扫码组件（UniSDK）在 Windows 下会伴随创建一个不接受输入的半透明阴影分层窗口（`WS_EX_LAYERED`，无标题）。在 Linux XWayland 环境下，平铺合成器（如 Mango）容易将其作为独立顶级窗口捕获并绘制边框。
 
 若使用 Mango，在 `rule.conf` 中追加以下规则即可彻底消除后方黑框：
 
@@ -135,47 +148,36 @@ window_rule=is_floating:1,app_id:(?i).*launch.*
 window_rule=no_blur:1,is_floating:1,no_border:1,is_unmanaged_global:1,offset_x:9999,offset_y:9999,app_id:(?i).*onmyoji.*,title:broken
 ```
 
-## 环境变量配置
-
-可在启动前指定环境变量微调运行表现：
-
-```bash
-# 自定义数据存储目录
-export YYS_DATA_DIR="/path/to/custom_storage"
-
-# 设置 Wine 渲染 DPI (如 96 为 100%, 120 为 125%, 144 为 150%)
-export YYS_DPI=120
-
-# 开启 DXVK 性能监控 HUD (显示 FPS、显卡型号、GPU 负载与显存)
-export YYS_HUD=1
-
-# 若遇到特定渲染异常，可强制禁用 DXVK 回退至 WineD3D (OpenGL)
-# export YYS_NO_DXVK=1
-
-# 禁用内核 FSync / ESync 线程同步加速
-# export YYS_NO_FSYNC=1
-# export YYS_NO_ESYNC=1
-
-# 开启 Wine 调试日志
-export YYS_WINEDEBUG="warn+all,err+all"
-```
+### 3. 为什么不推荐使用 MuMu 模拟器渠道包？
+网易官方提供了两种不同的 PC 端形式：
+1. **原生 PC 桌面互通版 (推荐)**：网易自研 NeoX 原生游戏引擎，纯原生 DirectX/Vulkan 客户端，运行流畅、无安卓模拟器性能损耗。
+2. **MuMu 模拟器专版**：依赖 `MuMuNxSup.sys` 等 Windows Ring 0 内核虚拟化驱动，Wine 在 Linux 用户态无法加载该内核驱动，会报错 13 / 11001。因此本启动器默认全面自动化部署**原生 PC 桌面互通版**。
 
 ---
 
-## 其他电脑使用方法
+## 其他电脑直接引用 Flake 使用
 
-1. 确保目标电脑已安装 Nix 并启用了 Flakes：
-   ```bash
-   # 查看 nix flake 支持情况
-   nix flake --version
-   ```
-2. 克隆本仓库并直接运行：
-   ```bash
-   git clone <你的仓库地址> yys
-   cd yys
-   nix run
-   ```
-   也可以无需 clone 直接远端启动：
-   ```bash
-   nix run git+https://github.com/<你的用户名>/yys
-   ```
+在已启用 Nix Flakes 的其他电脑上，无需预先配置任何依赖，直接一条命令拉起：
+
+```bash
+# 方式一: 克隆仓库运行
+git clone git@github.com:JIAnnLee22/onmyoji.flake.git onmyoji
+cd onmyoji
+nix run
+
+# 方式二: 直接通过远端 Flake 运行
+nix run github:JIAnnLee22/onmyoji.flake
+```
+
+或在其他系统的 `flake.nix` 中作为输入引用：
+
+```nix
+{
+  inputs = {
+    onmyoji.url = "github:JIAnnLee22/onmyoji.flake";
+  };
+
+  # 在 NixOS 或 Home Manager 中使用:
+  # environment.systemPackages = [ inputs.onmyoji.packages.${system}.default ];
+}
+```

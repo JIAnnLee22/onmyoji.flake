@@ -1,0 +1,14 @@
+[Desktop Entry]
+Name=阴阳师
+Name[zh_CN]=阴阳师
+GenericName=Onmyoji
+GenericName[zh_CN]=阴阳师桌面版
+Comment=网易《阴阳师》桌面版 (Onmyoji Desktop)
+Comment[zh_CN]=网易《阴阳师》桌面版 (Onmyoji Desktop)
+Exec=onmyoji-launcher
+Icon=onmyoji
+Terminal=false
+Type=Application
+Categories=Game;RolePlaying;
+Keywords=onmyoji;yinyangshi;game;阴阳师;网易;
+StartupWMClass=onmyoji.exe

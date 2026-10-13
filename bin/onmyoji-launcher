@@ -2,72 +2,94 @@
 set -eo pipefail
 
 # ==============================================================================
-# 阴阳师桌面版 (MuMu专版 / 互通版) Nix 启动包装器
-# 官方下载源: https://adl.netease.com/d/g/a11/c/yxyys_mumu12
-# 特性: 独立隔离 WINEPREFIX, 自动中文字体渲染与注册表注入, 杜绝系统菜单污染
+# 阴阳师桌面版 (Onmyoji Desktop / PC互通版) Nix 启动包装器
+# 特性: 独立隔离 WINEPREFIX, 自动中文字体渲染与注册表注入, DXVK/FSync 加速,
+#       全自动客户端缓存检测与解压部署, 全自动桌面快捷方式注册
 # ==============================================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SHARE_DIR="${SCRIPT_DIR}/../share"
-if [ ! -d "${SHARE_DIR}" ] && [ -d "${SCRIPT_DIR}/share" ]; then
-  SHARE_DIR="${SCRIPT_DIR}/share"
+PROJECT_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+# 资源文件目录解析 (优先环境变量，其次打包后 share，最后仓库本地 share)
+SHARE_DIR="${ONMYOJI_SHARE_DIR:-}"
+if [ -z "${SHARE_DIR}" ] || [ ! -d "${SHARE_DIR}" ]; then
+  if [ -d "${SCRIPT_DIR}/../share" ]; then
+    SHARE_DIR="${SCRIPT_DIR}/../share"
+  elif [ -d "${SCRIPT_DIR}/share" ]; then
+    SHARE_DIR="${SCRIPT_DIR}/share"
+  fi
 fi
 
-# 1. 确定数据隔离目录 (优先级: YYS_DATA_DIR > YYS_PORTABLE > XDG_DATA_HOME/yys)
-if [ -n "${YYS_DATA_DIR:-}" ]; then
-  DATA_DIR="${YYS_DATA_DIR}"
-elif [ "${YYS_PORTABLE:-0}" = "1" ]; then
+# 1. 确定数据隔离目录 (优先级: ONMYOJI_DATA_DIR > ONMYOJI_PORTABLE > XDG_DATA_HOME/onmyoji)
+DEFAULT_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/onmyoji"
+LEGACY_DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/yys"
+
+if [ -n "${ONMYOJI_DATA_DIR:-}" ]; then
+  DATA_DIR="${ONMYOJI_DATA_DIR}"
+elif [ "${ONMYOJI_PORTABLE:-0}" = "1" ]; then
   DATA_DIR="${PWD}/.data"
 else
-  DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/yys"
+  # 自动迁移旧版历史数据目录 (~/.local/share/yys -> ~/.local/share/onmyoji)
+  if [ ! -e "${DEFAULT_DATA_DIR}" ] && [ -d "${LEGACY_DATA_DIR}" ]; then
+    echo ">> 检测到历史数据目录 (${LEGACY_DATA_DIR})，正在自动规范迁移至新标准路径: ${DEFAULT_DATA_DIR} ..."
+    mkdir -p "$(dirname "${DEFAULT_DATA_DIR}")"
+    mv "${LEGACY_DATA_DIR}" "${DEFAULT_DATA_DIR}"
+  fi
+  DATA_DIR="${DEFAULT_DATA_DIR}"
 fi
 
 WINEPREFIX="${DATA_DIR}/wine"
+CACHE_DIR="${DATA_DIR}/cache"
 INSTALLER_DIR="${DATA_DIR}/installer"
-INSTALLER_FILE="${INSTALLER_DIR}/yxyys_mumu12_setup.exe"
-OFFICIAL_PAGE_URL="https://adl.netease.com/d/g/a11/c/yxyys_mumu12"
-OFFICIAL_DOWNLOAD_URL="https://mumu.nie.netease.com/api/dl/win?channel=yx-yys"
 OFFICIAL_NATIVE_PC_URL="https://g37.gdl.netease.com/yys_win32_20250919.zip"
+OFFICIAL_MUMU_PAGE_URL="https://adl.netease.com/d/g/a11/c/yxyys_mumu12"
+OFFICIAL_MUMU_DOWNLOAD_URL="https://mumu.nie.netease.com/api/dl/win?channel=yx-yys"
 
 # 2. 导出 Wine 隔离与环境配置
 export WINEPREFIX
 export WINEARCH="win64"
-export WINEDEBUG="${YYS_WINEDEBUG:--all}"
+export WINEDEBUG="${ONMYOJI_WINEDEBUG:--all}"
 
-# 关键系统隔离与原生 DirectX 编译加速:
-# 强制使用微软原生 Direct3D 编译器 (d3dcompiler_47/43)，彻底消除转场着色器编译失败导致的卡死 2~3 秒
+# 强制使用微软原生 Direct3D 编译器 (d3dcompiler_47/43)，彻底消除转场着色器编译失败导致的卡死
 export WINEDLLOVERRIDES="d3dcompiler_47=n,b;d3dcompiler_43=n,b;d3dx9_43=n,b;winemenubuilder.exe=d;mscoree=d;mshtml=d"
 
-# 强制中文语言环境，保证 Wine 内部文字编码与语言环境一致
+# 强制中文语言环境
 export LANG="${LANG:-zh_CN.UTF-8}"
 export LC_ALL="${LC_ALL:-zh_CN.UTF-8}"
 
-# 宿主 GPU 驱动路径穿透 (解决 NixOS / Linux 下 NVIDIA/Mesa EGL 与 DRI/OpenGL 初始化)
-if [ -d "/run/opengl-driver/lib" ]; then
-  export LD_LIBRARY_PATH="/run/opengl-driver/lib:${LD_LIBRARY_PATH:-}"
-fi
-if [ -d "/run/opengl-driver-32/lib" ]; then
-  export LD_LIBRARY_PATH="/run/opengl-driver-32/lib:${LD_LIBRARY_PATH:-}"
-fi
-# NVIDIA 专用硬件 Vulkan ICD 穿透加速
-if [ -f "/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json" ]; then
-  export VK_DRIVER_FILES="/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json"
+# 宿主 GPU 驱动路径穿透 (解决 NixOS / Linux 下 NVIDIA、AMD、Intel EGL/OpenGL 与 Vulkan 初始化)
+for dri_path in "/run/opengl-driver/lib" "/run/opengl-driver-32/lib"; do
+  if [ -d "${dri_path}" ]; then
+    export LD_LIBRARY_PATH="${dri_path}:${LD_LIBRARY_PATH:-}"
+  fi
+done
+
+# 智能识别与注入 NixOS Vulkan ICD 驱动搜索目录 (不排他，完美兼容 AMD/Intel/NVIDIA 及双显卡切换)
+if [ -d "/run/opengl-driver/share/vulkan/icd.d" ]; then
+  export XDG_DATA_DIRS="/run/opengl-driver/share:${XDG_DATA_DIRS:-/usr/local/share:/usr/share}"
 fi
 
 # 游戏多线程锁与性能优化: 启用 FSync (futex) / ESync (eventfd)
-# 针对 Zen 内核及现代 Linux 内核，绕过 wineserver 锁争用，大幅消除掉帧与微卡顿
-if [ "${YYS_NO_FSYNC:-0}" != "1" ]; then
+if [ "${ONMYOJI_NO_FSYNC:-0}" != "1" ]; then
   export WINEFSYNC=1
 fi
-if [ "${YYS_NO_ESYNC:-0}" != "1" ]; then
+if [ "${ONMYOJI_NO_ESYNC:-0}" != "1" ]; then
   export WINEESYNC=1
 fi
 
-# 着色器与管线缓存持久化与 DXVK 优化 (解决转场、场景切换、进战斗时的即时编译卡顿)
+# 着色器与管线缓存持久化与全显卡通用优化 (全面支持 AMD/Intel/NVIDIA)
 SHADER_CACHE_DIR="${DATA_DIR}/shader-cache"
 mkdir -p "${SHADER_CACHE_DIR}"
+
+# 1) NVIDIA 着色器磁盘持久化缓存
 export __GL_SHADER_DISK_CACHE=1
 export __GL_SHADER_DISK_CACHE_PATH="${SHADER_CACHE_DIR}"
+
+# 2) AMD / Intel (Mesa RADV / ANV / Iris) 着色器磁盘持久化缓存
+export MESA_SHADER_CACHE_DIR="${SHADER_CACHE_DIR}"
+export MESA_SHADER_CACHE_MAX_SIZE="4G"
+
+# 3) DXVK 异步管线与状态缓存 (DirectX 11 -> Vulkan，全显卡通用加速)
 export DXVK_STATE_CACHE_PATH="${SHADER_CACHE_DIR}"
 export DXVK_LOG_PATH="${DATA_DIR}/log"
 
@@ -90,46 +112,47 @@ show_help() {
 阴阳师桌面版 (Onmyoji Desktop / PC互通版) Nix 启动工具
 
 用法:
-  nix run                          启动游戏 (未安装时自动引导安装或提示)
+  nix run                          启动游戏 (未安装时自动检测本地缓存或下载安装)
   nix run . -- [选项]              传递参数控制运行方式
 
 选项:
-  --desktop [分辨率]               使用 Wine 虚拟桌面模式启动 (默认不使用虚拟桌面，以原生独立悬浮窗口启动；默认 1920x1080)
+  --desktop [分辨率]               使用 Wine 虚拟桌面模式启动 (默认不使用虚拟桌面，原生窗口启动；默认 1920x1080)
   --no-desktop                     禁用 Wine 虚拟桌面 (默认)
   --hud, --dxvk-hud                启用 DXVK 实时性能监视面板 (显示 FPS、GPU负载、显存)
   --no-dxvk                        禁用 DXVK，回退到 Wine 自带的 WineD3D (OpenGL) 渲染
   --dxvk-install                   强制重新部署/更新容器内的 DXVK DLL 软链接
   --dxvk-uninstall                 卸载容器内的 DXVK，恢复 Wine 原生 DLL
-  --install                        运行官方 MuMu 专版安装程序 (链接: yxyys_mumu12)
+  --desktop-entry                  在系统桌面应用菜单中安装/更新“阴阳师”图标与快捷方式
+  --import <目录或压缩包>          导入并解压现有的客户端 (支持官方原生 PC 互通版压缩包)
+  --export-cache <目标路径>        将当前已就绪的客户端导出为缓存压缩包，便于直接拷贝至其他电脑
+  --install-mumu                   运行官方 MuMu 模拟器渠道包安装向导 (仅供调试)
   --installer <路径>               使用指定的本地安装包运行安装
-  --import <目录或压缩包>          导入并解压现有的阴阳师客户端 (支持官方原生 PC 互通版)
   --run <可执行程序路径>           直接运行指定的 Windows 可执行文件
-  --winecfg                        打开该隔离环境的 Wine 配置面板 (winecfg)
-  --regedit                        打开该隔离环境的注册表编辑器 (regedit)
+  --winecfg                        打开当前独立隔离环境的 Wine 配置面板 (winecfg)
+  --regedit                        打开当前独立隔离环境的注册表编辑器 (regedit)
   --winetricks [参数...]           在当前独立隔离环境中运行 winetricks
   --cmd                            打开当前环境的 Windows CMD 命令行
   --status                         查看当前隔离环境状态、安装路径与磁盘占用
-  --clean                          删除当前隔离环境数据 (清理缓存及前缀)
+  --clean                          删除当前隔离环境数据 (清理缓存及 Wine 前缀)
   --help, -h                       显示此帮助信息
 
-说明:
-  1. 链接 yxyys_mumu12 是网易官方提供的 MuMu 模拟器专版。注意: 由于该模拟器深度依赖
-     Windows 内核硬件虚拟化驱动 (MuMuNxSup.sys / VirtualBox驱动)，在 Linux Wine 用户态
-     环境下可能因无法加载内核级驱动而提示错误码 13 / 11001。
-  2. 若遇到模拟器内核驱动限制，强烈推荐使用网易官方原生的【阴阳师 PC 桌面互通版】
-     (基于网易自研 NeoX 引擎，纯原生 DirectX/Vulkan 客户端，无需任何模拟器)：
-     官方下载源: https://g37.gdl.netease.com/yys_win32_20250919.zip
-     下载后使用: nix run . -- --import <yys_win32_20250919.zip 或解压后的目录>
+全自动安装与缓存特性:
+  1. 换新机器无需手动繁琐配置：只需运行 nix run，启动器会自动扫描当前目录、上级目录
+     及下载目录中的客户端压缩包 (如 onmyoji.zip) 并全自动解压和优化；
+  2. 若未检测到本地缓存，启动器将全自动通过网易官方 CDN 断点续传下载原生 PC 客户端并部署；
+  3. 启动器每次运行会自动向桌面环境 (~/.local/share/applications) 注册启动图标，
+     后续可直接在系统启动器 (Rofi, Wofi, GNOME, KDE 等) 中搜索“阴阳师”或“onmyoji”点击启动。
 
 环境变量:
-  YYS_DATA_DIR                     自定义数据存储根路径 (默认: ~/.local/share/yys)
-  YYS_PORTABLE=1                   启用便携模式，数据保存在当前目录 .data/
-  YYS_DPI=<数值>                   自定义 Wine DPI 缩放 (如 96, 120, 144)
-  YYS_HUD=1                        启用 DXVK 性能监控 HUD (FPS / GPU 占用)
-  YYS_NO_DXVK=1                    禁用 DXVK (回退至 WineD3D OpenGL)
-  YYS_NO_FSYNC=1                   禁用 WINEFSYNC 线程同步加速
-  YYS_NO_ESYNC=1                   禁用 WINEESYNC 线程同步加速
-  YYS_WINEDEBUG=<等级>             调试级别 (默认: -all)
+  ONMYOJI_DATA_DIR                 自定义数据存储根路径 (默认: ~/.local/share/onmyoji)
+  ONMYOJI_PORTABLE=1               启用便携模式，数据保存在当前目录 .data/
+  ONMYOJI_CLIENT_ARCHIVE=<路径>    显式指定游戏离线安装包路径 (.zip / .7z)
+  ONMYOJI_DPI=<数值>               自定义 Wine DPI 缩放 (如 96, 120, 144)
+  ONMYOJI_HUD=1                    启用 DXVK 性能监控 HUD (FPS / GPU 占用)
+  ONMYOJI_NO_DXVK=1                禁用 DXVK (回退至 WineD3D OpenGL)
+  ONMYOJI_NO_FSYNC=1               禁用 WINEFSYNC 线程同步加速
+  ONMYOJI_NO_ESYNC=1               禁用 WINEESYNC 线程同步加速
+  ONMYOJI_WINEDEBUG=<等级>         调试级别 (默认: -all)
 EOF
 }
 
@@ -171,7 +194,7 @@ setup_prefix_fonts() {
     ln -sf "${noto_font}" "${font_dir}/simhei.ttf"
   fi
 
-  # 备用文泉驿正黑/微米黑
+  # 备用文泉驿正黑
   local wqy_font=""
   if [ -n "${WQY_FONT_PATH:-}" ] && [ -f "${WQY_FONT_PATH}" ]; then
     wqy_font="${WQY_FONT_PATH}"
@@ -183,9 +206,9 @@ setup_prefix_fonts() {
   fi
 
   # 导入中文字体替换与渲染平滑注册表
-  local reg_file="${YYS_FONTS_REG:-}"
+  local reg_file="${ONMYOJI_FONTS_REG:-}"
   if [ -z "${reg_file}" ] || [ ! -f "${reg_file}" ]; then
-    if [ -f "${SHARE_DIR}/fonts.reg" ]; then
+    if [ -n "${SHARE_DIR}" ] && [ -f "${SHARE_DIR}/fonts.reg" ]; then
       reg_file="${SHARE_DIR}/fonts.reg"
     elif [ -f "${SCRIPT_DIR}/../share/fonts.reg" ]; then
       reg_file="${SCRIPT_DIR}/../share/fonts.reg"
@@ -196,15 +219,15 @@ setup_prefix_fonts() {
     wine regedit "${reg_file}" >/dev/null 2>&1 || true
   fi
 
-  # 默认清除 Wine 虚拟桌面注册表配置，防止历史残留造成强制虚拟桌面
-  if [ "${USE_DESKTOP:-0}" != "1" ] && [ "${YYS_DESKTOP:-0}" = "0" ]; then
+  # 默认清除 Wine 虚拟桌面注册表配置
+  if [ "${USE_DESKTOP:-0}" != "1" ] && [ "${ONMYOJI_DESKTOP:-0}" = "0" ]; then
     disable_virtual_desktop
   fi
 
   # 如果设置了 DPI，更新注册表
-  if [ -n "${YYS_DPI:-}" ]; then
+  if [ -n "${ONMYOJI_DPI:-}" ]; then
     local dpi_hex
-    dpi_hex=$(printf "%08x" "${YYS_DPI}")
+    dpi_hex=$(printf "%08x" "${ONMYOJI_DPI}")
     local dpi_reg_tmp
     dpi_reg_tmp="$(mktemp --suffix=.reg)"
     cat <<EOF > "${dpi_reg_tmp}"
@@ -219,7 +242,7 @@ EOF
 }
 
 setup_prefix_dxvk() {
-  if [ "${USE_DXVK:-1}" != "1" ] || [ "${YYS_NO_DXVK:-0}" = "1" ]; then
+  if [ "${USE_DXVK:-1}" != "1" ] || [ "${ONMYOJI_NO_DXVK:-0}" = "1" ]; then
     return 0
   fi
 
@@ -286,7 +309,7 @@ setup_prefix_d3dcompiler() {
           current_target="$(readlink -f "${dest_file}" 2>/dev/null || true)"
           [ "${current_target}" != "$(readlink -f "${src_file}")" ] && need_link=1
         else
-          # 如果文件小于 1MB，为 Wine 自身阉割的 builtin stub (微软原版 d3dcompiler_47 约 4.3MB)
+          # 如果文件小于 1MB，为 Wine 自身精简 stub
           local fsize
           fsize=$(wc -c < "${dest_file}" 2>/dev/null || echo 0)
           [ "${fsize}" -lt 1000000 ] && need_link=1
@@ -346,7 +369,6 @@ find_installed_exe() {
     fi
   done
 
-  # 备用方案: 扫描 drive_c 或 DATA_DIR 下的主可执行程序
   local fallback
   fallback=$(find "${DATA_DIR}" "${WINEPREFIX}/drive_c" -maxdepth 6 \( -iname "onmyoji.exe" -o -iname "Launch.exe" -o -iname "NemuPlayer.exe" -o -iname "MuMuPlayer.exe" \) 2>/dev/null | head -n 1 || true)
   if [ -n "${fallback}" ] && [ -f "${fallback}" ]; then
@@ -357,28 +379,134 @@ find_installed_exe() {
   return 1
 }
 
-download_installer() {
-  mkdir -p "${INSTALLER_DIR}"
-  if [ -f "${INSTALLER_FILE}" ] && [ -s "${INSTALLER_FILE}" ]; then
-    echo ">> 已检测到本地安装包缓存: ${INSTALLER_FILE}"
+# 桌面快捷方式与图标自动化部署
+install_desktop_entry() {
+  local app_dir="${XDG_DATA_HOME:-$HOME/.local/share}/applications"
+  local icon_dir="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/256x256/apps"
+  local desktop_file="${app_dir}/onmyoji.desktop"
+  local target_icon="${icon_dir}/onmyoji.png"
+
+  mkdir -p "${app_dir}" "${icon_dir}"
+
+  # 寻找高质量应用图标
+  local icon_src=""
+  for cand in \
+    "${SHARE_DIR}/icons/hicolor/256x256/apps/onmyoji.png" \
+    "${SHARE_DIR}/onmyoji.png" \
+    "${PROJECT_ROOT}/share/onmyoji.png" \
+    "${DATA_DIR}/client/Documents/cloudfilesys3/icon.ico"; do
+    if [ -f "${cand}" ]; then
+      icon_src="${cand}"
+      break
+    fi
+  done
+
+  if [ -n "${icon_src}" ] && [ ! -f "${target_icon}" ]; then
+    if [[ "${icon_src}" =~ \.png$ ]]; then
+      cp -f "${icon_src}" "${target_icon}"
+    elif command -v magick >/dev/null 2>&1; then
+      magick "${icon_src}" -thumbnail 256x256 "${target_icon}" 2>/dev/null || true
+    fi
+  fi
+
+  # 确定桌面 Exec 命令
+  local exec_cmd=""
+  local launcher_self
+  launcher_self="$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || echo "${BASH_SOURCE[0]}")"
+
+  if command -v onmyoji-launcher >/dev/null 2>&1; then
+    exec_cmd="onmyoji-launcher"
+  elif [[ "${launcher_self}" == /nix/store/* ]]; then
+    exec_cmd="${launcher_self}"
+  elif [ -d "${PROJECT_ROOT}/.git" ] || [ -f "${PROJECT_ROOT}/flake.nix" ]; then
+    # 若在源码仓库中，使用 nix run 唤起确保依赖闭包完整
+    exec_cmd="sh -c 'if command -v onmyoji-launcher >/dev/null 2>&1; then exec onmyoji-launcher; else cd \"${PROJECT_ROOT}\" && exec nix run . -- \"\$@\"; fi' _"
+  else
+    exec_cmd="${launcher_self}"
+  fi
+
+  cat <<EOF > "${desktop_file}"
+[Desktop Entry]
+Name=阴阳师
+Name[zh_CN]=阴阳师
+GenericName=Onmyoji
+GenericName[zh_CN]=阴阳师桌面版
+Comment=网易《阴阳师》桌面版 (Onmyoji Desktop)
+Comment[zh_CN]=网易《阴阳师》桌面版 (Onmyoji Desktop)
+Exec=${exec_cmd}
+Icon=onmyoji
+Terminal=false
+Type=Application
+Categories=Game;RolePlaying;
+Keywords=onmyoji;yinyangshi;game;阴阳师;网易;
+StartupWMClass=onmyoji.exe
+EOF
+
+  chmod +x "${desktop_file}"
+  if command -v update-desktop-database >/dev/null 2>&1; then
+    update-desktop-database "${app_dir}" >/dev/null 2>&1 || true
+  fi
+
+  echo ">> [Desktop] 桌面启动器已成功注册: ${desktop_file}"
+}
+
+# 全自动查找本地预置缓存安装包
+find_cached_archive() {
+  if [ -n "${ONMYOJI_CLIENT_ARCHIVE:-}" ] && [ -f "${ONMYOJI_CLIENT_ARCHIVE}" ]; then
+    echo "${ONMYOJI_CLIENT_ARCHIVE}"
     return 0
   fi
 
-  echo ">> 正在从官方源下载阴阳师桌面版安装包..."
-  echo ">> 官方来源: ${OFFICIAL_PAGE_URL}"
-  echo ">> 下载目标: ${INSTALLER_FILE}"
+  # 搜索候选项：当前目录、项目根目录、下载目录、数据缓存目录
+  local search_dirs=(
+    "${PWD}"
+    "${PROJECT_ROOT}"
+    "${CACHE_DIR}"
+    "${HOME}/Downloads"
+  )
+
+  for dir in "${search_dirs[@]}"; do
+    [ -d "${dir}" ] || continue
+    # 优先检测 onmyoji 开头的压缩包，其次兼容检测官方命名的 zip
+    for pat in "onmyoji.zip" "onmyoji*.zip" "yys.zip" "yys_win32_*.zip"; do
+      local matched
+      matched=$(find "${dir}" -maxdepth 1 -name "${pat}" 2>/dev/null | head -n 1 || true)
+      if [ -n "${matched}" ] && [ -s "${matched}" ]; then
+        echo "${matched}"
+        return 0
+      fi
+    done
+  done
+
+  return 1
+}
+
+# 全自动下载网易官方原生 PC 互通版 (免模拟器，支持断点续传)
+download_official_native_client() {
+  mkdir -p "${CACHE_DIR}"
+  local target_file="${CACHE_DIR}/onmyoji_win32.zip"
+
+  echo "=================================================================="
+  echo ">> 检测到本地尚未安装客户端，且未发现本地缓存。"
+  echo ">> 正在从网易官方 CDN 断点续传下载【阴阳师官方 PC 桌面互通版】(约 19.8 GB)..."
+  echo ">> 官方来源: ${OFFICIAL_NATIVE_PC_URL}"
+  echo ">> 下载缓存至: ${target_file}"
+  echo ">> (提示: 后续更换机器或重装时，可直接复用该压缩包，无需再次下载)"
+  echo "=================================================================="
 
   if command -v curl >/dev/null 2>&1; then
-    curl -fL --progress-bar -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
-      -o "${INSTALLER_FILE}" "${OFFICIAL_DOWNLOAD_URL}"
+    curl -C - -fL --progress-bar \
+      -A "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36" \
+      -o "${target_file}" "${OFFICIAL_NATIVE_PC_URL}"
   elif command -v wget >/dev/null 2>&1; then
-    wget -q --show-progress -O "${INSTALLER_FILE}" "${OFFICIAL_DOWNLOAD_URL}"
+    wget -c -q --show-progress -O "${target_file}" "${OFFICIAL_NATIVE_PC_URL}"
   else
-    echo "错误: 未找到 curl 或 wget 下载工具。" >&2
+    echo "错误: 系统中未找到 curl 或 wget。" >&2
     exit 1
   fi
 
-  echo ">> 安装包下载完成。"
+  echo ">> 官方客户端下载完成！"
+  echo "${target_file}"
 }
 
 optimize_client_settings() {
@@ -394,7 +522,7 @@ optimize_client_settings() {
     fi
   fi
 
-  # 2. 优化 Documents/clientconfig 帧率至 60 FPS (消除 30 帧下转场动画耗时翻倍卡顿)
+  # 2. 优化 Documents/clientconfig 帧率至 60 FPS
   local client_config="${app_dir}/Documents/clientconfig"
   if [ -f "${client_config}" ] && command -v python3 >/dev/null 2>&1; then
     python3 -c '
@@ -426,8 +554,7 @@ run_installed_game() {
   local app_dir
   app_dir="$(dirname "${target_exe}")"
 
-  # NeoX 按工作目录读取 cloud.json、thd 和 bin/res_render3.npk。
-  # bin/onmyoji.exe 必须从客户端根目录启动，不能通过补几个软链接替代。
+  # NeoX 按工作目录读取配置。bin/onmyoji.exe 必须从客户端根目录启动
   if [ "$(basename "${app_dir}")" = "bin" ] && \
      [ -f "${app_dir}/../neox.xml" ] && [ -d "${app_dir}/../res" ]; then
     app_dir="$(dirname "${app_dir}")"
@@ -438,44 +565,28 @@ run_installed_game() {
   wine_exe="$(winepath -w "${target_exe}")"
   echo ">> 客户端工作目录: ${app_dir}"
 
-  # 执行转场加速与客户端自动优化 (ShaderCache + 60 FPS)
+  # 自动执行转场加速与客户端优化 (ShaderCache + 60 FPS)
   optimize_client_settings "${app_dir}"
 
-  if [ "${USE_HUD:-0}" = "1" ] || [ -n "${YYS_HUD:-}" ]; then
-    export DXVK_HUD="${YYS_HUD_CONFIG:-${YYS_HUD:-fps,gpuload,version,devinfo}}"
+  # 自动注册/更新桌面图标快捷方式，确保应用列表中随时可直接点开
+  install_desktop_entry >/dev/null 2>&1 || true
+
+  if [ "${USE_HUD:-0}" = "1" ] || [ -n "${ONMYOJI_HUD:-}" ]; then
+    export DXVK_HUD="${ONMYOJI_HUD_CONFIG:-${ONMYOJI_HUD:-fps,gpuload,version,devinfo}}"
     echo ">> 启用 DXVK 性能监控面板 (HUD: ${DXVK_HUD}) ..."
   fi
 
-  if { [ "${USE_DESKTOP:-0}" = "1" ] || [ -n "${YYS_DESKTOP:-}" ]; } && [ "${YYS_DESKTOP:-}" != "0" ]; then
-    local res="${DESKTOP_RES:-${YYS_DESKTOP:-1920x1080}}"
+  local desktop_pref="${ONMYOJI_DESKTOP:-0}"
+  if { [ "${USE_DESKTOP:-0}" = "1" ] || [ -n "${ONMYOJI_DESKTOP:-}" ]; } && [ "${desktop_pref}" != "0" ]; then
+    local res="${DESKTOP_RES:-${desktop_pref:-1920x1080}}"
     [ "${res}" = "1" ] && res="1920x1080"
     echo ">> 启用 Wine 虚拟桌面模式 (${res}) ..."
-    exec wine explorer.exe "/desktop=yys,${res}" "${wine_exe}" "$@"
+    exec wine explorer.exe "/desktop=onmyoji,${res}" "${wine_exe}" "$@"
   else
     echo ">> 启动原生独立窗口模式 (禁用虚拟桌面，以独立原生窗口/浮动窗口运行)..."
     disable_virtual_desktop
     exec wine "${wine_exe}" "$@"
   fi
-}
-
-run_installer() {
-  local installer_path="${1:-$INSTALLER_FILE}"
-  if [ ! -f "${installer_path}" ]; then
-    download_installer
-    installer_path="${INSTALLER_FILE}"
-  fi
-
-  init_wineprefix
-  echo ">> [3/3] 正在启动官方安装向导..."
-  echo ">> 注意事项:"
-  echo "   当前链接 (yxyys_mumu12) 为网易 MuMu 模拟器渠道包，该包需在 Windows 安装内核级虚拟化驱动。"
-  echo "   在 Linux/Wine 环境下若点击安装提示“错误码: 13 / 11001”，系因 Wine 无法加载 Windows 内核驱动导致。"
-  echo "   如遇此情况，推荐使用网易官方原生的【阴阳师 PC 桌面互通版】(免模拟器，原生 NeoX 引擎)："
-  echo "   下载: https://g37.gdl.netease.com/yys_win32_20250919.zip"
-  echo "   导入: nix run . -- --import yys_win32_20250919.zip"
-  echo "   ------------------------------------------------------------"
-
-  wine "${installer_path}"
 }
 
 import_client() {
@@ -492,16 +603,24 @@ import_client() {
   mkdir -p "${target_dir}"
 
   if [ -d "${src}" ]; then
-    echo ">> 正在从目录导入客户端至: ${target_dir} ..."
+    echo ">> 正在从本地目录导入客户端至: ${target_dir} ..."
     cp -rn "${src}"/* "${target_dir}/"
   elif [[ "${src}" =~ \.(zip|7z)$ ]]; then
-    echo ">> 正在解压客户端压缩包至: ${target_dir} ..."
-    7z x -y "${src}" -o"${target_dir}"
-    # 如果解压后存在单层嵌套子目录，平铺至 target_dir
+    echo ">> 正在全自动解压客户端压缩包 (${src}) 至: ${target_dir} ..."
+    if command -v 7z >/dev/null 2>&1; then
+      7z x -y "${src}" -o"${target_dir}"
+    elif command -v unzip >/dev/null 2>&1; then
+      unzip -o -q "${src}" -d "${target_dir}"
+    else
+      echo "错误: 未找到 7z 或 unzip 解压工具。" >&2
+      exit 1
+    fi
+
+    # 如果解压后存在单层嵌套子目录，自动平铺至 target_dir
     local sub
-    sub=$(find "${target_dir}" -maxdepth 1 -mindepth 1 -type d \( -name "yys_win32_*" -o -name "Onmyoji*" -o -name "yys*" \) 2>/dev/null | head -n 1 || true)
-    if [ -n "${sub}" ] && [ -d "${sub}" ] && [ -f "${sub}/Launch.exe" -o -f "${sub}/onmyoji.exe" ]; then
-      echo ">> 整理客户端子目录文件结构 (${sub}) ..."
+    sub=$(find "${target_dir}" -maxdepth 1 -mindepth 1 -type d \( -name "yys_win32_*" -o -name "onmyoji*" -o -name "Onmyoji*" -o -name "yys*" \) 2>/dev/null | head -n 1 || true)
+    if [ -n "${sub}" ] && [ -d "${sub}" ] && [ -f "${sub}/Launch.exe" -o -f "${sub}/onmyoji.exe" -o -f "${sub}/bin/onmyoji.exe" ]; then
+      echo ">> 自动平铺客户端子目录结构 (${sub}) ..."
       shopt -s dotglob
       mv "${sub}"/* "${target_dir}/" 2>/dev/null || true
       shopt -u dotglob
@@ -513,19 +632,56 @@ import_client() {
   fi
 
   init_wineprefix
-  echo ">> 客户端导入完成！"
-  local exe
-  if exe=$(find_installed_exe 2>/dev/null); then
-    echo ">> 找到启动程序: ${exe}"
-    echo ">> 正在启动..."
-    run_installed_game "${exe}"
-  else
-    echo ">> 提示: 未在 ${target_dir} 自动检测到 Launch.exe 或 onmyoji.exe，请检查解压内容。"
+  install_desktop_entry
+
+  echo ">> 客户端导入与环境初始化全部完成！"
+}
+
+export_client_cache() {
+  local target_archive="$1"
+  if [ -z "${target_archive}" ]; then
+    target_archive="${PWD}/onmyoji.zip"
   fi
+
+  local client_dir="${DATA_DIR}/client"
+  if [ ! -d "${client_dir}" ] || [ ! -f "${client_dir}/bin/onmyoji.exe" ]; then
+    echo "错误: 当前数据目录 (${client_dir}) 中尚未安装完整的客户端，无法导出缓存。" >&2
+    exit 1
+  fi
+
+  echo ">> 正在将当前完整客户端导出打包为缓存压缩包: ${target_archive} ..."
+  mkdir -p "$(dirname "${target_archive}")"
+  if command -v 7z >/dev/null 2>&1; then
+    7z a -tzip -mx=1 "${target_archive}" "${client_dir}/*"
+  elif command -v zip >/dev/null 2>&1; then
+    (cd "${client_dir}" && zip -r -1 "${target_archive}" .)
+  else
+    echo "错误: 未找到 7z 或 zip 打包工具。" >&2
+    exit 1
+  fi
+
+  echo ">> 客户端缓存打包完成: ${target_archive}"
+  echo ">> 提示: 可直接将此压缩包拷至任意机器的项目目录下，运行 nix run 即可秒级开箱即用！"
+}
+
+run_mumu_installer() {
+  local installer_path="${1:-${INSTALLER_DIR}/onmyoji_mumu_setup.exe}"
+  mkdir -p "${INSTALLER_DIR}"
+
+  if [ ! -f "${installer_path}" ]; then
+    echo ">> 正在下载 MuMu 模拟器专版安装包..."
+    if command -v curl >/dev/null 2>&1; then
+      curl -fL --progress-bar -A "Mozilla/5.0" -o "${installer_path}" "${OFFICIAL_MUMU_DOWNLOAD_URL}"
+    fi
+  fi
+
+  init_wineprefix
+  echo ">> 正在启动 MuMu 渠道安装包 (注意: 若报错误码 13 / 11001 系内核虚拟化驱动限制，建议使用原生互通版)..."
+  wine "${installer_path}"
 }
 
 clean_data() {
-  echo ">> 警告: 即将删除当前项目的隔离数据与所有已安装文件:"
+  echo ">> 警告: 即将删除当前隔离数据目录及所有已安装游戏文件:"
   echo "   ${DATA_DIR}"
   read -r -p "确认清理？[y/N] " confirm
   if [[ "${confirm}" =~ ^[Yy]$ ]]; then
@@ -537,7 +693,7 @@ clean_data() {
 }
 
 show_status() {
-  echo "=== 阴阳师桌面版隔离环境状态 ==="
+  echo "=== 阴阳师桌面版 (Onmyoji Desktop) 隔离环境状态 ==="
   echo "数据目录: ${DATA_DIR}"
   echo "WinePrefix: ${WINEPREFIX}"
   if [ -d "${WINEPREFIX}" ]; then
@@ -546,19 +702,11 @@ show_status() {
     echo "WinePrefix 状态: 未初始化"
   fi
 
-  if [ -f "${INSTALLER_FILE}" ]; then
-    echo "安装包缓存: 已下载 ($(ls -lh "${INSTALLER_FILE}" | awk '{print $5}'))"
-  else
-    echo "安装包缓存: 未下载"
-  fi
-
   local d3d11_file="${WINEPREFIX}/drive_c/windows/system32/d3d11.dll"
   if [ -L "${d3d11_file}" ]; then
     echo "DXVK 状态: 已部署 (DirectX 11 -> Vulkan: $(readlink -f "${d3d11_file}" 2>/dev/null || echo "symlink"))"
-  elif [ -f "${d3d11_file}" ] && grep -a -q "Wine builtin DLL" "${d3d11_file}" 2>/dev/null; then
-    echo "DXVK 状态: 未启用 (使用 WineD3D OpenGL 原生实现)"
   elif [ -f "${d3d11_file}" ]; then
-    echo "DXVK 状态: 已部署 (自定义 DLL)"
+    echo "DXVK 状态: 已部署"
   else
     echo "DXVK 状态: 未初始化"
   fi
@@ -567,13 +715,7 @@ show_status() {
   if [ -L "${d3dcompiler_file}" ]; then
     echo "D3D 编译器状态: 已部署微软原生库 ($(readlink -f "${d3dcompiler_file}" 2>/dev/null || echo "symlink"))"
   elif [ -f "${d3dcompiler_file}" ]; then
-    local comp_size
-    comp_size=$(wc -c < "${d3dcompiler_file}" 2>/dev/null || echo 0)
-    if [ "${comp_size}" -gt 1000000 ]; then
-      echo "D3D 编译器状态: 已部署微软原生库 (${comp_size} 字节)"
-    else
-      echo "D3D 编译器状态: Wine 内建精简版 (可能导致转场着色器卡顿)"
-    fi
+    echo "D3D 编译器状态: 已部署"
   else
     echo "D3D 编译器状态: 未初始化"
   fi
@@ -589,6 +731,12 @@ show_status() {
     echo "游戏启动程序: ${installed}"
   else
     echo "游戏安装状态: 未安装"
+    local cached
+    if cached=$(find_cached_archive 2>/dev/null); then
+      echo "检测到本地安装缓存: ${cached} (直接运行 nix run 将自动解压就绪)"
+    else
+      echo "未检测到本地缓存 (直接运行 nix run 将自动从官方 CDN 下载就绪)"
+    fi
   fi
 }
 
@@ -599,6 +747,7 @@ show_status() {
 ACTION="auto"
 TARGET_EXE=""
 CUSTOM_INSTALLER=""
+EXPORT_TARGET=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -613,7 +762,7 @@ while [ $# -gt 0 ]; do
       ;;
     --no-desktop)
       USE_DESKTOP="0"
-      YYS_DESKTOP="0"
+      ONMYOJI_DESKTOP="0"
       shift
       ;;
     --hud|--dxvk-hud)
@@ -622,7 +771,7 @@ while [ $# -gt 0 ]; do
       ;;
     --no-dxvk)
       USE_DXVK="0"
-      YYS_NO_DXVK="1"
+      ONMYOJI_NO_DXVK="1"
       shift
       ;;
     --dxvk-install)
@@ -633,13 +782,28 @@ while [ $# -gt 0 ]; do
       ACTION="dxvk-uninstall"
       shift
       ;;
-    --install)
-      ACTION="install"
+    --desktop-entry)
+      ACTION="desktop-entry"
       shift
       ;;
     --import)
       ACTION="import"
       IMPORT_PATH="$2"
+      shift 2
+      ;;
+    --export-cache)
+      ACTION="export-cache"
+      EXPORT_TARGET="${2:-}"
+      shift
+      [ -n "${EXPORT_TARGET}" ] && shift
+      ;;
+    --install-mumu)
+      ACTION="install-mumu"
+      shift
+      ;;
+    --installer)
+      ACTION="installer"
+      CUSTOM_INSTALLER="$2"
       shift 2
       ;;
     --run)
@@ -688,8 +852,18 @@ case "${ACTION}" in
   status)
     show_status
     ;;
+  desktop-entry)
+    install_desktop_entry
+    ;;
   import)
     import_client "${IMPORT_PATH}"
+    INSTALLED_EXE=$(find_installed_exe || true)
+    if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
+      run_installed_game "${INSTALLED_EXE}"
+    fi
+    ;;
+  export-cache)
+    export_client_cache "${EXPORT_TARGET}"
     ;;
   clean)
     clean_data
@@ -722,8 +896,12 @@ case "${ACTION}" in
       exit 1
     fi
     ;;
-  install)
-    run_installer "${CUSTOM_INSTALLER}"
+  install-mumu)
+    run_mumu_installer "${CUSTOM_INSTALLER}"
+    ;;
+  installer)
+    init_wineprefix
+    wine "${CUSTOM_INSTALLER}"
     ;;
   run)
     init_wineprefix
@@ -738,12 +916,39 @@ case "${ACTION}" in
     ;;
   auto)
     init_wineprefix
-    INSTALLED_EXE=$(find_installed_exe || true)
+
+    INSTALLED_EXE=$(find_installed_exe 2>/dev/null || true)
+    if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
+      run_installed_game "${INSTALLED_EXE}" "$@"
+      exit 0
+    fi
+
+    # 未检测到已安装游戏，进入全自动化开箱即用流程：
+    echo ">> [自动化] 正在检查本地游戏客户端或离线安装包..."
+    CACHED_ARCHIVE=$(find_cached_archive 2>/dev/null || true)
+
+    if [ -n "${CACHED_ARCHIVE}" ] && [ -f "${CACHED_ARCHIVE}" ]; then
+      echo ">> [自动化] 发现本地客户端缓存压缩包: ${CACHED_ARCHIVE}"
+      echo ">> [自动化] 正在自动解压并部署游戏环境，无需手动操作..."
+      import_client "${CACHED_ARCHIVE}"
+    else
+      echo ">> [自动化] 未检测到本地离线压缩包，即将全自动下载官方 PC 客户端..."
+      DOWNLOADED_FILE=$(download_official_native_client)
+      if [ -n "${DOWNLOADED_FILE}" ] && [ -f "${DOWNLOADED_FILE}" ]; then
+        echo ">> [自动化] 正在自动解压并部署刚下载的客户端..."
+        import_client "${DOWNLOADED_FILE}"
+      else
+        echo "错误: 客户端下载失败，请检查网络连接。" >&2
+        exit 1
+      fi
+    fi
+
+    INSTALLED_EXE=$(find_installed_exe 2>/dev/null || true)
     if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
       run_installed_game "${INSTALLED_EXE}" "$@"
     else
-      echo ">> 检测到游戏尚未安装，准备启动官方安装向导..."
-      run_installer
+      echo "错误: 客户端部署完成，但未找到可执行程序 onmyoji.exe，请检查解压目录。" >&2
+      exit 1
     fi
     ;;
 esac
