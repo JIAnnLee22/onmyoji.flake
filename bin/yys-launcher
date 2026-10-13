@@ -34,8 +34,9 @@ export WINEPREFIX
 export WINEARCH="win64"
 export WINEDEBUG="${YYS_WINEDEBUG:--all}"
 
-# 关键系统隔离: 禁用 winemenubuilder，禁止向宿主系统注册 .desktop 快捷方式及文件关联
-export WINEDLLOVERRIDES="winemenubuilder.exe=d;mscoree=d;mshtml=d"
+# 关键系统隔离与原生 DirectX 编译加速:
+# 强制使用微软原生 Direct3D 编译器 (d3dcompiler_47/43)，彻底消除转场着色器编译失败导致的卡死 2~3 秒
+export WINEDLLOVERRIDES="d3dcompiler_47=n,b;d3dcompiler_43=n,b;d3dx9_43=n,b;winemenubuilder.exe=d;mscoree=d;mshtml=d"
 
 # 强制中文语言环境，保证 Wine 内部文字编码与语言环境一致
 export LANG="${LANG:-zh_CN.UTF-8}"
@@ -48,6 +49,41 @@ fi
 if [ -d "/run/opengl-driver-32/lib" ]; then
   export LD_LIBRARY_PATH="/run/opengl-driver-32/lib:${LD_LIBRARY_PATH:-}"
 fi
+# NVIDIA 专用硬件 Vulkan ICD 穿透加速
+if [ -f "/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json" ]; then
+  export VK_DRIVER_FILES="/run/opengl-driver/share/vulkan/icd.d/nvidia_icd.json"
+fi
+
+# 游戏多线程锁与性能优化: 启用 FSync (futex) / ESync (eventfd)
+# 针对 Zen 内核及现代 Linux 内核，绕过 wineserver 锁争用，大幅消除掉帧与微卡顿
+if [ "${YYS_NO_FSYNC:-0}" != "1" ]; then
+  export WINEFSYNC=1
+fi
+if [ "${YYS_NO_ESYNC:-0}" != "1" ]; then
+  export WINEESYNC=1
+fi
+
+# 着色器与管线缓存持久化与 DXVK 优化 (解决转场、场景切换、进战斗时的即时编译卡顿)
+SHADER_CACHE_DIR="${DATA_DIR}/shader-cache"
+mkdir -p "${SHADER_CACHE_DIR}"
+export __GL_SHADER_DISK_CACHE=1
+export __GL_SHADER_DISK_CACHE_PATH="${SHADER_CACHE_DIR}"
+export DXVK_STATE_CACHE_PATH="${SHADER_CACHE_DIR}"
+export DXVK_LOG_PATH="${DATA_DIR}/log"
+
+# 生成并应用 DXVK 最佳转场与渲染配置 (异步管线 + GPL + 解锁 VSync 延迟)
+DXVK_CONF_FILE="${DATA_DIR}/dxvk.conf"
+if [ ! -f "${DXVK_CONF_FILE}" ]; then
+  cat <<'EOF' > "${DXVK_CONF_FILE}"
+# 阴阳师桌面版 DXVK 转场与渲染加速配置
+dxvk.enableAsync = true
+dxvk.gpl = true
+dxgi.syncInterval = 0
+d3d11.maxFrameRate = 0
+d3d11.samplerAnisotropy = 16
+EOF
+fi
+export DXVK_CONFIG_FILE="${DXVK_CONF_FILE}"
 
 show_help() {
   cat <<EOF
@@ -58,7 +94,12 @@ show_help() {
   nix run . -- [选项]              传递参数控制运行方式
 
 选项:
-  --desktop [分辨率]               使用 Wine 虚拟桌面模式启动 (解决平铺窗口管理器窗口挤压，默认 1920x1080)
+  --desktop [分辨率]               使用 Wine 虚拟桌面模式启动 (默认不使用虚拟桌面，以原生独立悬浮窗口启动；默认 1920x1080)
+  --no-desktop                     禁用 Wine 虚拟桌面 (默认)
+  --hud, --dxvk-hud                启用 DXVK 实时性能监视面板 (显示 FPS、GPU负载、显存)
+  --no-dxvk                        禁用 DXVK，回退到 Wine 自带的 WineD3D (OpenGL) 渲染
+  --dxvk-install                   强制重新部署/更新容器内的 DXVK DLL 软链接
+  --dxvk-uninstall                 卸载容器内的 DXVK，恢复 Wine 原生 DLL
   --install                        运行官方 MuMu 专版安装程序 (链接: yxyys_mumu12)
   --installer <路径>               使用指定的本地安装包运行安装
   --import <目录或压缩包>          导入并解压现有的阴阳师客户端 (支持官方原生 PC 互通版)
@@ -84,8 +125,30 @@ show_help() {
   YYS_DATA_DIR                     自定义数据存储根路径 (默认: ~/.local/share/yys)
   YYS_PORTABLE=1                   启用便携模式，数据保存在当前目录 .data/
   YYS_DPI=<数值>                   自定义 Wine DPI 缩放 (如 96, 120, 144)
+  YYS_HUD=1                        启用 DXVK 性能监控 HUD (FPS / GPU 占用)
+  YYS_NO_DXVK=1                    禁用 DXVK (回退至 WineD3D OpenGL)
+  YYS_NO_FSYNC=1                   禁用 WINEFSYNC 线程同步加速
+  YYS_NO_ESYNC=1                   禁用 WINEESYNC 线程同步加速
   YYS_WINEDEBUG=<等级>             调试级别 (默认: -all)
 EOF
+}
+
+disable_virtual_desktop() {
+  local clean_reg_tmp
+  clean_reg_tmp="$(mktemp --suffix=.reg)"
+  cat <<EOF > "${clean_reg_tmp}"
+Windows Registry Editor Version 5.00
+
+[HKEY_CURRENT_USER\Software\Wine\Explorer]
+"Desktop"=-
+
+[-HKEY_CURRENT_USER\Software\Wine\Explorer\Desktops]
+
+[HKEY_CURRENT_USER\Software\Wine\X11 Driver]
+"Desktop"=-
+EOF
+  wine regedit "${clean_reg_tmp}" >/dev/null 2>&1 || true
+  rm -f "${clean_reg_tmp}"
 }
 
 setup_prefix_fonts() {
@@ -133,6 +196,11 @@ setup_prefix_fonts() {
     wine regedit "${reg_file}" >/dev/null 2>&1 || true
   fi
 
+  # 默认清除 Wine 虚拟桌面注册表配置，防止历史残留造成强制虚拟桌面
+  if [ "${USE_DESKTOP:-0}" != "1" ] && [ "${YYS_DESKTOP:-0}" = "0" ]; then
+    disable_virtual_desktop
+  fi
+
   # 如果设置了 DPI，更新注册表
   if [ -n "${YYS_DPI:-}" ]; then
     local dpi_hex
@@ -150,6 +218,90 @@ EOF
   fi
 }
 
+setup_prefix_dxvk() {
+  if [ "${USE_DXVK:-1}" != "1" ] || [ "${YYS_NO_DXVK:-0}" = "1" ]; then
+    return 0
+  fi
+
+  if ! command -v setup_dxvk.sh >/dev/null 2>&1; then
+    echo ">> [DXVK] 提示: 未在 PATH 中找到 setup_dxvk.sh，跳过 DXVK 自动部署。"
+    return 0
+  fi
+
+  local d3d11_file="${WINEPREFIX}/drive_c/windows/system32/d3d11.dll"
+  local need_install=0
+  if [ ! -e "${d3d11_file}" ]; then
+    need_install=1
+  elif [ -L "${d3d11_file}" ]; then
+    if [ ! -e "$(readlink -f "${d3d11_file}" 2>/dev/null || true)" ]; then
+      need_install=1
+    fi
+  else
+    if grep -a -q "Wine builtin DLL" "${d3d11_file}" 2>/dev/null; then
+      need_install=1
+    fi
+  fi
+
+  if [ "${FORCE_DXVK_INSTALL:-0}" = "1" ] || [ "${need_install}" = "1" ]; then
+    echo ">> [3/3] 部署 DXVK (DirectX 9/11 -> Vulkan 高性能硬件加速)..."
+    COLUMNS="${COLUMNS:-80}" setup_dxvk.sh install --symlink || {
+      echo "警告: setup_dxvk.sh 部署异常，继续使用 Wine 原生渲染。" >&2
+    }
+  fi
+}
+
+uninstall_prefix_dxvk() {
+  if command -v setup_dxvk.sh >/dev/null 2>&1; then
+    echo ">> 正在卸载容器内的 DXVK 并恢复 Wine 原生 DLL..."
+    COLUMNS="${COLUMNS:-80}" setup_dxvk.sh uninstall || true
+  else
+    echo "错误: 未找到 setup_dxvk.sh。" >&2
+  fi
+}
+
+setup_prefix_d3dcompiler() {
+  local target_sys32="${WINEPREFIX}/drive_c/windows/system32"
+  mkdir -p "${target_sys32}"
+
+  local client_bin=""
+  for cand in "${DATA_DIR}/client/bin" "${DATA_DIR}/bin" "${PWD}/client/bin" "${PWD}/bin"; do
+    if [ -d "${cand}" ] && [ -f "${cand}/d3dcompiler_47.dll" ]; then
+      client_bin="${cand}"
+      break
+    fi
+  done
+
+  if [ -n "${client_bin}" ]; then
+    for dll in d3dcompiler_47.dll D3DCompiler_43.dll d3dx9_43.dll; do
+      local src_file="${client_bin}/${dll}"
+      local dest_name="${dll,,}"
+      local dest_file="${target_sys32}/${dest_name}"
+
+      if [ -f "${src_file}" ]; then
+        local need_link=0
+        if [ ! -e "${dest_file}" ]; then
+          need_link=1
+        elif [ -L "${dest_file}" ]; then
+          local current_target
+          current_target="$(readlink -f "${dest_file}" 2>/dev/null || true)"
+          [ "${current_target}" != "$(readlink -f "${src_file}")" ] && need_link=1
+        else
+          # 如果文件小于 1MB，为 Wine 自身阉割的 builtin stub (微软原版 d3dcompiler_47 约 4.3MB)
+          local fsize
+          fsize=$(wc -c < "${dest_file}" 2>/dev/null || echo 0)
+          [ "${fsize}" -lt 1000000 ] && need_link=1
+        fi
+
+        if [ "${need_link}" = "1" ]; then
+          echo ">> [优化] 部署微软原生 Direct3D 编译器: ${dest_name} (消除转场着色器卡顿)..."
+          rm -f "${dest_file}"
+          ln -sf "${src_file}" "${dest_file}"
+        fi
+      fi
+    done
+  fi
+}
+
 init_wineprefix() {
   if [ ! -f "${WINEPREFIX}/system.reg" ]; then
     echo ">> [1/3] 正在初始化独立的 Wine 环境..."
@@ -159,6 +311,9 @@ init_wineprefix() {
 
   echo ">> [2/3] 配置中文字体与字体抗锯齿渲染..."
   setup_prefix_fonts
+
+  setup_prefix_dxvk
+  setup_prefix_d3dcompiler
 }
 
 find_installed_exe() {
@@ -226,35 +381,80 @@ download_installer() {
   echo ">> 安装包下载完成。"
 }
 
+optimize_client_settings() {
+  local app_dir="$1"
+  [ -z "${app_dir}" ] || [ ! -d "${app_dir}" ] && return 0
+
+  # 1. 修复 neox.xml 中的着色器缓存 (UseShaderCache='True')
+  local neox_file="${app_dir}/neox.xml"
+  if [ -f "${neox_file}" ]; then
+    if grep -q "UseShaderCache = 'False'" "${neox_file}" 2>/dev/null; then
+      echo ">> [优化] 开启 NeoX 引擎本地着色器缓存 (UseShaderCache=True，消除重复编译卡顿)..."
+      sed -i "s/UseShaderCache = 'False'/UseShaderCache = 'True'/g" "${neox_file}" 2>/dev/null || true
+    fi
+  fi
+
+  # 2. 优化 Documents/clientconfig 帧率至 60 FPS (消除 30 帧下转场动画耗时翻倍卡顿)
+  local client_config="${app_dir}/Documents/clientconfig"
+  if [ -f "${client_config}" ] && command -v python3 >/dev/null 2>&1; then
+    python3 -c '
+import json, sys
+cfg = sys.argv[1]
+try:
+    with open(cfg, "r") as f:
+        hex_data = f.read().strip()
+    data = json.loads(bytes.fromhex(hex_data).decode("utf-8"))
+    vals = data.get("graphics_quality_state", {}).get("values", {})
+    if vals.get("frame_rate") != 2:
+        vals["frame_rate"] = 2
+        new_hex = json.dumps(data, ensure_ascii=False).encode("utf-8").hex()
+        with open(cfg, "w") as f:
+            f.write(new_hex)
+        print(">> [优化] 提升游戏帧率至 60 FPS (大幅加速转场动画与过场过渡)...")
+except Exception:
+    pass
+' "${client_config}" 2>/dev/null || true
+  fi
+}
+
 run_installed_game() {
-  local target_exe="$1"
+  local target_exe
+  target_exe="$(readlink -f -- "$1")"
   shift || true
 
   echo ">> [3/3] 正在启动阴阳师桌面版 (${target_exe})..."
   local app_dir
   app_dir="$(dirname "${target_exe}")"
 
-  # 如果程序在子目录 bin 下，确保当前目录拥有上层配置文件的兼容软链接
-  if [ "$(basename "${app_dir}")" = "bin" ]; then
-    local root_dir
-    root_dir="$(dirname "${app_dir}")"
-    if [ -d "${root_dir}" ]; then
-      for cf in neox.xml client.ini pkginfo.json pkgmapping.json; do
-        [ -f "${root_dir}/${cf}" ] && [ ! -e "${app_dir}/${cf}" ] && ln -sf "../${cf}" "${app_dir}/${cf}" 2>/dev/null || true
-      done
-      [ -d "${root_dir}/res" ] && [ ! -e "${app_dir}/res" ] && ln -sf "../res" "${app_dir}/res" 2>/dev/null || true
-    fi
+  # NeoX 按工作目录读取 cloud.json、thd 和 bin/res_render3.npk。
+  # bin/onmyoji.exe 必须从客户端根目录启动，不能通过补几个软链接替代。
+  if [ "$(basename "${app_dir}")" = "bin" ] && \
+     [ -f "${app_dir}/../neox.xml" ] && [ -d "${app_dir}/../res" ]; then
+    app_dir="$(dirname "${app_dir}")"
   fi
 
   cd "${app_dir}"
+  local wine_exe
+  wine_exe="$(winepath -w "${target_exe}")"
+  echo ">> 客户端工作目录: ${app_dir}"
+
+  # 执行转场加速与客户端自动优化 (ShaderCache + 60 FPS)
+  optimize_client_settings "${app_dir}"
+
+  if [ "${USE_HUD:-0}" = "1" ] || [ -n "${YYS_HUD:-}" ]; then
+    export DXVK_HUD="${YYS_HUD_CONFIG:-${YYS_HUD:-fps,gpuload,version,devinfo}}"
+    echo ">> 启用 DXVK 性能监控面板 (HUD: ${DXVK_HUD}) ..."
+  fi
 
   if { [ "${USE_DESKTOP:-0}" = "1" ] || [ -n "${YYS_DESKTOP:-}" ]; } && [ "${YYS_DESKTOP:-}" != "0" ]; then
     local res="${DESKTOP_RES:-${YYS_DESKTOP:-1920x1080}}"
     [ "${res}" = "1" ] && res="1920x1080"
     echo ">> 启用 Wine 虚拟桌面模式 (${res}) ..."
-    exec wine explorer.exe "/desktop=yys,${res}" "$(basename "${target_exe}")" "$@"
+    exec wine explorer.exe "/desktop=yys,${res}" "${wine_exe}" "$@"
   else
-    exec wine "$(basename "${target_exe}")" "$@"
+    echo ">> 启动原生独立窗口模式 (禁用虚拟桌面，以独立原生窗口/浮动窗口运行)..."
+    disable_virtual_desktop
+    exec wine "${wine_exe}" "$@"
   fi
 }
 
@@ -318,8 +518,7 @@ import_client() {
   if exe=$(find_installed_exe 2>/dev/null); then
     echo ">> 找到启动程序: ${exe}"
     echo ">> 正在启动..."
-    cd "$(dirname "${exe}")"
-    wine "$(basename "${exe}")"
+    run_installed_game "${exe}"
   else
     echo ">> 提示: 未在 ${target_dir} 自动检测到 Launch.exe 或 onmyoji.exe，请检查解压内容。"
   fi
@@ -353,6 +552,37 @@ show_status() {
     echo "安装包缓存: 未下载"
   fi
 
+  local d3d11_file="${WINEPREFIX}/drive_c/windows/system32/d3d11.dll"
+  if [ -L "${d3d11_file}" ]; then
+    echo "DXVK 状态: 已部署 (DirectX 11 -> Vulkan: $(readlink -f "${d3d11_file}" 2>/dev/null || echo "symlink"))"
+  elif [ -f "${d3d11_file}" ] && grep -a -q "Wine builtin DLL" "${d3d11_file}" 2>/dev/null; then
+    echo "DXVK 状态: 未启用 (使用 WineD3D OpenGL 原生实现)"
+  elif [ -f "${d3d11_file}" ]; then
+    echo "DXVK 状态: 已部署 (自定义 DLL)"
+  else
+    echo "DXVK 状态: 未初始化"
+  fi
+
+  local d3dcompiler_file="${WINEPREFIX}/drive_c/windows/system32/d3dcompiler_47.dll"
+  if [ -L "${d3dcompiler_file}" ]; then
+    echo "D3D 编译器状态: 已部署微软原生库 ($(readlink -f "${d3dcompiler_file}" 2>/dev/null || echo "symlink"))"
+  elif [ -f "${d3dcompiler_file}" ]; then
+    local comp_size
+    comp_size=$(wc -c < "${d3dcompiler_file}" 2>/dev/null || echo 0)
+    if [ "${comp_size}" -gt 1000000 ]; then
+      echo "D3D 编译器状态: 已部署微软原生库 (${comp_size} 字节)"
+    else
+      echo "D3D 编译器状态: Wine 内建精简版 (可能导致转场着色器卡顿)"
+    fi
+  else
+    echo "D3D 编译器状态: 未初始化"
+  fi
+
+  echo "多线程同步: WINEFSYNC=${WINEFSYNC:-0}, WINEESYNC=${WINEESYNC:-0}"
+  if [ -d "${SHADER_CACHE_DIR}" ]; then
+    echo "着色器缓存: ${SHADER_CACHE_DIR} ($(du -sh "${SHADER_CACHE_DIR}" 2>/dev/null | awk '{print $1}'))"
+  fi
+
   local installed
   if installed=$(find_installed_exe 2>/dev/null); then
     echo "游戏安装状态: 已安装"
@@ -384,6 +614,23 @@ while [ $# -gt 0 ]; do
     --no-desktop)
       USE_DESKTOP="0"
       YYS_DESKTOP="0"
+      shift
+      ;;
+    --hud|--dxvk-hud)
+      USE_HUD="1"
+      shift
+      ;;
+    --no-dxvk)
+      USE_DXVK="0"
+      YYS_NO_DXVK="1"
+      shift
+      ;;
+    --dxvk-install)
+      ACTION="dxvk-install"
+      shift
+      ;;
+    --dxvk-uninstall)
+      ACTION="dxvk-uninstall"
       shift
       ;;
     --install)
@@ -447,6 +694,13 @@ case "${ACTION}" in
   clean)
     clean_data
     ;;
+  dxvk-install)
+    FORCE_DXVK_INSTALL=1 init_wineprefix
+    ;;
+  dxvk-uninstall)
+    init_wineprefix
+    uninstall_prefix_dxvk
+    ;;
   winecfg)
     init_wineprefix
     wine winecfg
@@ -486,15 +740,6 @@ case "${ACTION}" in
     init_wineprefix
     INSTALLED_EXE=$(find_installed_exe || true)
     if [ -n "${INSTALLED_EXE}" ] && [ -f "${INSTALLED_EXE}" ]; then
-      # 智能检测: 平铺桌面环境自动默认开启虚拟桌面防挤压
-      if [ -z "${USE_DESKTOP:-}" ] && [ "${YYS_DESKTOP:-}" != "0" ]; then
-        case "${XDG_CURRENT_DESKTOP,,}" in
-          *mango*|*hyprland*|*sway*|*i3*)
-            USE_DESKTOP="1"
-            DESKTOP_RES="${DESKTOP_RES:-1920x1080}"
-            ;;
-        esac
-      fi
       run_installed_game "${INSTALLED_EXE}" "$@"
     else
       echo ">> 检测到游戏尚未安装，准备启动官方安装向导..."

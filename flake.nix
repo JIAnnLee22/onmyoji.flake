@@ -34,6 +34,7 @@
               wrapProgram $out/bin/yys-launcher \
                 --prefix PATH : ${pkgs.lib.makeBinPath [
                   winePkg
+                  pkgs.dxvk.out
                   pkgs.winetricks
                   pkgs.curl
                   pkgs.coreutils
@@ -42,6 +43,7 @@
                   pkgs.gnugrep
                   pkgs.p7zip
                   pkgs.cabextract
+                  pkgs.python3
                 ]} \
                 --set NOTO_CJK_FONT_PATH "${pkgs.noto-fonts-cjk-sans}/share/fonts/opentype/noto-cjk/NotoSansCJK-VF.otf.ttc" \
                 --set WQY_FONT_PATH "${pkgs.wqy_zenhei}/share/fonts/wqy-zenhei/wqy-zenhei.ttc" \
@@ -68,12 +70,14 @@
           default = pkgs.mkShell {
             packages = [
               pkgs.wineWow64Packages.staging
+              pkgs.dxvk.out
               pkgs.winetricks
               pkgs.noto-fonts-cjk-sans
               pkgs.wqy_zenhei
               pkgs.curl
               pkgs.p7zip
               pkgs.cabextract
+              pkgs.python3
             ];
             shellHook = ''
               export NOTO_CJK_FONT_PATH="${pkgs.noto-fonts-cjk-sans}/share/fonts/opentype/noto-cjk/NotoSansCJK-VF.otf.ttc"
