@@ -10,3 +10,6 @@ result-*
 *.zip
 *.log
 *.tmp
+
+# Personal character inventory exports
+/exports/

@@ -94,6 +94,27 @@ nix run . -- --export-cache /path/to/onmyoji.zip
 
 ---
 
+## 角色库存属性导出
+
+游戏登录角色并进入庭院后，可只读导出**当前运行角色**的全部已缓存御魂（含已装备与未装备）：
+
+```bash
+python3 tools/export_current_souls.py --mappings exports/20261020-155636/name_mappings.json
+# 多个客户端同时运行时增加 --pid <onmyoji.exe 的 Linux PID>
+```
+
+`--mappings` 指向已有快照的公开名称映射，仅复用名称，**不复用旧库存**。脚本从运行进程定位客户端，通过最近的成功登录日志确认角色，并对 `Documents/cache_server_data/<UUID>/inventory` 和 `heroes` 做重复一致性读取；缓存须已在本次游戏会话更新。输出至新的 `exports/<时间戳>/`，不会覆盖旧快照。没有名称映射时需先提供该 JSON，脚本不会联网获取或猜填未知御魂名称。
+
+这是本地缓存快照，不保证包含服务器尚未同步、刷盘或加载的数据；也不是痒痒熊专用导入格式，未核验的锁定/弃置状态仅保留原始字段，不伪造默认值。导出文件与 ZIP 使用私有权限，且 `exports/` 已忽略。
+
+对已导出的本地缓存快照离线补全御魂属性（不注入进程、不修改游戏数据）：
+
+```bash
+python3 tools/export_soul_attributes.py exports/20261020-155636
+```
+
+输入目录须含 `souls.raw.json`、`heroes.raw.json`、`name_mappings.json` 和 `manifest.json`。输出 `御魂_AI分析.json`（推荐供 AI 分析）、完整属性 `御魂.csv`、保留原始字段的 `souls.json`，并更新校验和与 ZIP。百分比统一使用百分点（55 = 55%），保留未四舍五入的速度；合计不含式神基础属性或套装效果。遇到未核验的模板或低星强化成长规则会报错，不猜测填值。个人导出目录 `exports/` 已忽略，不应提交账号库存。
+
 ## 环境变量配置
 
 可在启动前指定环境变量微调运行表现：
